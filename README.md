@@ -45,6 +45,8 @@ pin 1
 
 什么时候需要第二个账号：另一个 ChatGPT 订阅身份、想让某个账号只用 API key 且默认模型不同、或想把某个项目/客户的会话历史与设置完全隔开。只切换 GLM / Kimi 不需要第二个账号，`/model` 就够。
 
+pi 本身没有权限弹窗，工具调用默认全部直接执行（相当于其他宿主的 yolo 模式）。会拦你的只有两样：本包的权限门（`permissionGate.mode`：`ask` 命中时问、`block` 一律拦、`off` 关掉），以及 pi 自带的项目信任提示（首次进入含 `.agents/skills` 或 `.pi/` 的项目时问一次，TUI 里 `/trust` 保存后不再问；`settings.json` 的 `defaultProjectTrust` 设为 `"always"` 则任何项目都不问，代价是陌生仓库里的 `.pi/extensions` 也会直接执行）。
+
 账号目录里的 `adonis-pi.json` 只写你要覆盖的键（`pin setup` 生成的就是这样），其余默认值随包更新；`denyCommands` 这类数组是追加，不是替换。
 
 ## 更新

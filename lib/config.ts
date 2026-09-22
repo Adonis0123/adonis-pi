@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface PermissionGateConfig {
-  mode: "ask" | "block";
+  /** ask = confirm in the UI (block without one); block = always block; off = the gate does nothing (pi's native, no-prompt behaviour). */
+  mode: "ask" | "block" | "off";
   denyCommands: string[];
   protectedPaths: string[];
 }
@@ -145,7 +146,7 @@ function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConf
   expectType("agentsMd", raw.agentsMd, "string");
   const pg = raw.permissionGate as Json;
   if (!isObject(pg)) throw new ConfigError("permissionGate must be an object");
-  if (pg.mode !== "ask" && pg.mode !== "block") throw new ConfigError('permissionGate.mode must be "ask" or "block"');
+  if (pg.mode !== "ask" && pg.mode !== "block" && pg.mode !== "off") throw new ConfigError('permissionGate.mode must be "ask", "block" or "off"');
   expectType("permissionGate.denyCommands", pg.denyCommands, "string[]");
   expectType("permissionGate.protectedPaths", pg.protectedPaths, "string[]");
   for (const re of pg.denyCommands as string[]) {

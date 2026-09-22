@@ -110,6 +110,17 @@ test("non-UI mode blocks without asking", async () => {
   assert.equal(r.block, true);
 });
 
+test("off mode lets a deny-listed call through without asking or notifying", async () => {
+  const n = fakeNotifier({}, { permissionGate: { ...gate(), mode: "off" } });
+  const { pi, emit } = createFakePi();
+  permissionGate(pi, n.deps);
+  let asked = 0;
+  const ctx = fakeCtx({ ui: { ...fakeCtx().ui, confirm: async () => { asked++; return false; } } });
+  assert.equal(await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, ctx), undefined);
+  assert.equal(asked, 0);
+  assert.equal(n.sent.length, 0);
+});
+
 test("block mode from an account config blocks even with UI, and a broken config warns once and falls back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "adonis-pi-gate-"));
   writeFileSync(join(dir, "adonis-pi.json"), JSON.stringify({ permissionGate: { mode: "block" } }));

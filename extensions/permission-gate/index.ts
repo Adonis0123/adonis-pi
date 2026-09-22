@@ -5,6 +5,7 @@ import { matchToolCall } from "./match.ts";
 export default function permissionGate(pi: ExtensionAPI, deps: SessionDeps = {}) {
   pi.on("tool_call", async (event, ctx) => {
     const session = getSession(ctx, deps);
+    if (session.config.permissionGate.mode === "off") return;
     const input = event.input as Record<string, unknown>;
     const hit = matchToolCall({ toolName: event.toolName, input }, session.config.permissionGate, ctx.cwd);
     if (!hit) return;

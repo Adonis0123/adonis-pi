@@ -10,7 +10,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["ask", "block"] },
+        "mode": { "enum": ["ask", "block", "off"], "description": "ask: confirm in the UI (block when there is none); block: always block; off: gate disabled, pi runs every tool call as it does natively." },
         "denyCommands": { "type": "array", "items": { "type": "string" } },
         "protectedPaths": { "type": "array", "items": { "type": "string" } }
       }

@@ -56,6 +56,13 @@ test("loadConfig rejects an invalid mode with ConfigError naming the field", () 
   assert.throws(() => loadConfig({ path: file, env: {} }), (e: unknown) => e instanceof ConfigError && /permissionGate\.mode/.test((e as Error).message));
 });
 
+test("loadConfig accepts mode off", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
+  const file = join(dir, "adonis-pi.json");
+  writeFileSync(file, JSON.stringify({ permissionGate: { mode: "off" } }));
+  assert.equal(loadConfig({ path: file, env: {} }).permissionGate.mode, "off");
+});
+
 test("loadConfig rejects idle without confirm", () => {
   const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
   const file = join(dir, "adonis-pi.json");
