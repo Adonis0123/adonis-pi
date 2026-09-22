@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Adonis0123/adonis-pi/main/config.schema.json",
+  "agentsMd": "",
+  "permissionGate": {
+    "mode": "ask",
+    "denyCommands": [
+      "^\\s*(\\w+=\\S*\\s+)*((env|command|exec|nohup|time)\\s+)*sudo\\b",
+      "^\\s*rm\\s+(\\S+\\s+)*(/|~|\\$HOME)(/\\*)?/?(\\s|$)",
+      "^\\s*git\\s+(-C\\s+\\S+\\s+)?push\\b.*(\\s(--force|--force-with-lease)\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S+)",
+      "^\\s*chmod\\s+(-R\\s+)?0?777\\b",
+      "^\\s*dd\\s+if="
+    ],
+    "protectedPaths": ["~/.ssh/**", "~/.aws/**"]
+  },
+  "notify": {
+    "command": "$ADONIS_PI_NOTIFY_CMD",
+    "kinds": { "confirm": true, "fail": true, "idle": false },
+    "idleDelaySeconds": 60
+  },
+  "askUserQuestion": { "enabled": true }
+}

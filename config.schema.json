@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "adonis-pi config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "agentsMd": { "type": "string", "description": "Path to the AGENTS.md that pin setup links into the account dir. Empty = not linked." },
+    "permissionGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["ask", "block"] },
+        "denyCommands": { "type": "array", "items": { "type": "string" } },
+        "protectedPaths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": { "type": "string", "description": "Notifier executable. Use \"$VAR\" to read from the environment." },
+        "kinds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "confirm": { "type": "boolean" },
+            "fail": { "type": "boolean" },
+            "idle": { "type": "boolean" }
+          }
+        },
+        "idleDelaySeconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "askUserQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    }
+  }
+}
