@@ -63,10 +63,11 @@ test("getSession re-reads adonis-pi.json when it changes, and warns once per bro
     assert.equal(getSession(ctx).config.permissionGate.mode, "ask", "edit picked up without a restart");
     await sleep(15);
     writeFileSync(file, "{ broken");
-    assert.equal(getSession(ctx).config.permissionGate.mode, "ask", "template fallback");
+    assert.equal(getSession(ctx).config.permissionGate.mode, "block", "template fallback runs the gate in block mode: the account's own Deny rules are unreadable");
     getSession(ctx);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /adonis-pi config/);
+    assert.match(warnings[0], /blocks every hit/);
   } finally {
     delete process.env.PI_CODING_AGENT_DIR;
   }

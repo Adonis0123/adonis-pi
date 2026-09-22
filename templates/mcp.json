@@ -1,0 +1,42 @@
+{
+  "settings": {
+    "toolPrefix": "server",
+    "scriptMode": false,
+    "notifyOnStartupConnect": false
+  },
+  "mcpServers": {
+    "kimi-cu": {
+      "command": "{{KIMI_CU_BIN}}",
+      "args": [
+        "mcp",
+        "-s",
+        "user"
+      ],
+      "directTools": true
+    },
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "figma-rest": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "figma-developer-mcp@0.13.2",
+        "--stdio",
+        "--env",
+        "/dev/null",
+        "--no-telemetry"
+      ],
+      "env": {
+        "FIGMA_API_KEY": "${FIGMA_API_KEY}",
+        "FRAMELINK_TELEMETRY": "off"
+      },
+      "requestTimeoutMs": 180000,
+      "directTools": true
+    },
+    "figma": {
+      "url": "https://mcp.figma.com/mcp",
+      "disabled": true
+    }
+  }
+}

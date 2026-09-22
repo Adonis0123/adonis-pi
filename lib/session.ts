@@ -42,7 +42,11 @@ export function decideNotification(h: Happened, notify: NotifyConfig, ref: Sessi
       return { args: plain, payload: buildPayload("question", ref, { tool_input: { questions: h.questions.map((q) => ({ question: q.question, header: q.header })) } }) };
     case "permission": {
       if (!k.confirm) return undefined;
-      const summary = typeof h.input.command === "string" ? { command: h.input.command.slice(0, 200) } : typeof h.input.path === "string" ? { path: h.input.path } : {};
+      const summary =
+        typeof h.input.command === "string" ? { command: h.input.command.slice(0, 200) }
+        : typeof h.input.path === "string" ? { path: h.input.path }
+        : typeof h.input.tool === "string" ? { tool: h.input.tool }
+        : {};
       return { args: plain, payload: buildPayload("permission", ref, { tool_name: h.toolName, tool_input: summary }) };
     }
     case "settled": {
@@ -99,8 +103,14 @@ export function createSession(ctx: SessionCtx, config: AdonisPiConfig, spawn: Sp
 
 /**
  * Config is re-read whenever adonis-pi.json changes on disk (mtime+size), so edits apply at the next event without a
- * restart. A broken file falls back to the template and is reported once per file version.
+ * restart. A broken file falls back to the template with the Permission Gate forced to `block`: the account's own Deny
+ * rules are unreadable, so nothing the default rules catch may slip through on a confirm. Reported once per file version.
  */
+export function brokenConfigFallback(): AdonisPiConfig {
+  const cfg = loadTemplate();
+  if (cfg.permissionGate.mode !== "off") cfg.permissionGate.mode = "block";
+  return cfg;
+}
 let cache: { key: string; config: AdonisPiConfig } | undefined;
 
 function cachedConfig(ctx: SessionCtx): AdonisPiConfig {
@@ -114,9 +124,9 @@ function cachedConfig(ctx: SessionCtx): AdonisPiConfig {
   try {
     cache = { key, config: loadConfig({ path }) };
   } catch (e) {
-    cache = { key, config: loadTemplate() };
+    cache = { key, config: brokenConfigFallback() };
     const msg = e instanceof ConfigError ? e.message : `adonis-pi config: ${(e as Error).message}`;
-    if (surface(ctx).canPrompt) ctx.ui.notify(`${msg} — using template defaults`, "warning");
+    if (surface(ctx).canPrompt) ctx.ui.notify(`${msg} — using template defaults; permission gate blocks every hit until the file is fixed`, "warning");
   }
   return cache.config;
 }

@@ -35,13 +35,20 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 ## 能力（第一阶段）
 
 - **Permission Gate（权限门）**：拦截危险工具调用的 Extension。命中 Deny 规则时，交互模式下询问，非交互模式下直接阻止。
-- **Deny 规则**：Permission Gate 的一条匹配规则，作用于命令文本或文件路径。
+- **Deny 规则**：Permission Gate 的一条匹配规则，作用于命令文本、文件路径，或 MCP 工具名（`<server>_<tool>`，直接工具按名字，`mcp` 元工具按其 `tool` 参数）。
 - **Attention Notify（注意力提醒）**：在 agent 等待输入、出错、空闲时通知用户的 Extension。它只负责判定事件并调用一个外部 Notifier，不负责发送。
 - **Notifier**：Attention Notify 调用的外部命令，由 Config 指定。发送渠道（飞书或其他）由 Notifier 决定。
 - **Ask Tool**：名为 `AskUserQuestion` 的工具，参数与 Claude Code 同名工具兼容，让写给 Claude Code 的 skill 无需改字就能在 pi 里向用户提问。
 - **Provider**：pi 的模型供应方配置。第一阶段有三个：ChatGPT 订阅（OAuth）、GLM、Kimi。
 - **Session（会话上下文）**：一次 pi 进程里 Extension 共用的东西：生效 Config、Surface、向 Notifier 报事的入口。Extension 只说「发生了什么」，Session 决定要不要告诉 Notifier。
 - **Surface（交互面）**：当前 pi 进程能怎样和人互动的三个判定：能弹对话框、能画自定义面板、能叫 Notifier。由 pi 的运行模式一次性推出，所有 Extension 共用同一张表。
+
+## MCP（第二阶段）
+
+- **MCP Server（MCP 服务器）**：通过 MCP 协议向宿主提供工具的外部进程或 HTTP 服务。第二阶段启用三个：kimi-cu（macOS 桌面操作）、deepwiki、figma-rest（经 Figma REST API 只读设计文件）；figma（Figma 官方远程服务器）只保留禁用占位，不接。
+- **MCP Bridge（MCP 桥）**：让 pi 具备 MCP 客户端能力的 Pi Package。本仓不实现 MCP 协议，只依赖并配置一个现成的 Bridge（ADR 0003 选 `pi-mcp-adapter`，版本锁在 Template 里）。
+- **MCP Config**：Account Layer 里的 `mcp.json`，MCP Bridge 的唯一配置入口，列出该账号启用的 MCP Server。有 Template，受 Drift 检查。
+- **CLI Facade（命令行门面）**：把一个 MCP Server 包成命令行程序、由 Skill 调用的方式。机器上 chrome-devtools 走这条路，pi 沿用；本仓不为其他 MCP Server 新建 Facade。
 
 ## 验收
 

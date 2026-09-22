@@ -4,38 +4,83 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
-    "agentsMd": { "type": "string", "description": "Path to the AGENTS.md that pin setup links into the account dir. Empty = not linked." },
+    "$schema": {
+      "type": "string"
+    },
+    "agentsMd": {
+      "type": "string",
+      "description": "Path to the AGENTS.md that pin setup links into the account dir. Empty = not linked."
+    },
     "permissionGate": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["ask", "block", "off"], "description": "ask: confirm in the UI (block when there is none); block: always block; off: gate disabled, pi runs every tool call as it does natively." },
-        "denyCommands": { "type": "array", "items": { "type": "string" } },
-        "protectedPaths": { "type": "array", "items": { "type": "string" } }
+        "mode": {
+          "enum": [
+            "ask",
+            "block",
+            "off"
+          ],
+          "description": "ask: confirm in the UI (block when there is none); block: always block; off: gate disabled, pi runs every tool call as it does natively."
+        },
+        "denyCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denyTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs on MCP tool names (<server>_<tool>) that the gate intercepts: direct tools by name, proxy calls by the `tool` argument of the `mcp` meta-tool."
+        }
       }
     },
     "notify": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "command": { "type": "string", "description": "Notifier executable. Use \"$VAR\" to read from the environment." },
+        "command": {
+          "type": "string",
+          "description": "Notifier executable. Use \"$VAR\" to read from the environment."
+        },
         "kinds": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "confirm": { "type": "boolean" },
-            "fail": { "type": "boolean" },
-            "idle": { "type": "boolean" }
+            "confirm": {
+              "type": "boolean"
+            },
+            "fail": {
+              "type": "boolean"
+            },
+            "idle": {
+              "type": "boolean"
+            }
           }
         },
-        "idleDelaySeconds": { "type": "integer", "minimum": 0 }
+        "idleDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "askUserQuestion": {
       "type": "object",
       "additionalProperties": false,
-      "properties": { "enabled": { "type": "boolean" } }
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

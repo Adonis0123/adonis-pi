@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createFakePi, fakeCtx } from "./helpers/fake-pi.ts";
 import startupCheck, { envRefs, missingByFile, missingEnvRefs } from "../extensions/startup-check/index.ts";
 
@@ -99,4 +99,76 @@ test("the notifier variable counts too: from the account adonis-pi.json, or from
   await withAgentDir(models, { GLM_API_KEY: "x", KIMI_API_KEY: "y" }, async (dir) => {
     assert.deepEqual(missingByFile(dir, process.env), [], "a literal notifier path needs no variable");
   }, JSON.stringify({ notify: { command: "/opt/notify.sh" } }));
+});
+
+test("before_agent_start adds one MCP boundary section from mcp.json: enabled servers, disabled ones, placeholder counts as unavailable", async () => {
+  const { mcpBoundarySection } = await import("../extensions/startup-check/index.ts");
+  await withAgentDir(undefined, {}, async (dir) => {
+    assert.equal(mcpBoundarySection(dir), undefined, "no mcp.json, no section");
+    writeFileSync(
+      join(dir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "kimi-cu": { command: "{{KIMI_CU_BIN}}", args: ["mcp"], directTools: true },
+          deepwiki: { url: "https://mcp.deepwiki.com/mcp" },
+          figma: { url: "https://mcp.figma.com/mcp", disabled: true },
+        },
+      }),
+    );
+    const section = mcpBoundarySection(dir)!;
+    assert.match(section, /Available: deepwiki \(proxy: first mcp\(\{search:"deepwiki"\}\)/);
+    assert.match(section, /Not available in pi: kimi-cu, figma\./);
+    assert.doesNotMatch(section, /mode=ax/, "the kimi-cu hint only appears when kimi-cu is usable");
+    assert.match(section, /mcpScript tool is turned off/);
+    // a resolved but missing executable is "not available" too, matching pin doctor
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { "kimi-cu": { command: "/nonexistent/kimi-cu", directTools: true } } }));
+    assert.match(mcpBoundarySection(dir)!, /No MCP server is enabled.*\nNot available in pi: kimi-cu/);
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { "kimi-cu": { command: process.execPath, directTools: true } } }));
+    const withKimi = mcpBoundarySection(dir)!;
+    assert.match(withKimi, /Available: kimi-cu \(direct tools kimi-cu_\*\)\./);
+    assert.match(withKimi, /mode=ax/);
+    writeFileSync(
+      join(dir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "kimi-cu": { command: "{{KIMI_CU_BIN}}", args: ["mcp"], directTools: true },
+          deepwiki: { url: "https://mcp.deepwiki.com/mcp" },
+          figma: { url: "https://mcp.figma.com/mcp", disabled: true },
+        },
+      }),
+    );
+    const { pi, emit } = createFakePi();
+    startupCheck(pi);
+    const event = { prompt: "hi", systemPromptOptions: { sections: {} as Record<string, string> } };
+    await emit("before_agent_start", event, fakeCtx());
+    assert.equal(event.systemPromptOptions.sections.adonis_pi_mcp, section);
+    writeFileSync(join(dir, "mcp.json"), "{ broken");
+    assert.equal(mcpBoundarySection(dir), undefined, "an unreadable mcp.json adds nothing; pin doctor reports it");
+  });
+});
+
+test("figma-rest is available only when its bare command resolves on PATH and every variable its env references is set", async () => {
+  const { mcpBoundarySection } = await import("../extensions/startup-check/index.ts");
+  await withAgentDir(undefined, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh" }, async (dir) => {
+    const bin = dirname(process.execPath);
+    const write = (srv: unknown) => writeFileSync(join(dir, "mcp.json"), JSON.stringify({ mcpServers: { "figma-rest": srv } }));
+    write({ command: basename(process.execPath), args: ["--stdio"], env: { FIGMA_API_KEY: "${FIGMA_TEST_KEY}", FRAMELINK_TELEMETRY: "off" }, directTools: true });
+    let s = mcpBoundarySection(dir, { PATH: bin })!;
+    assert.match(s, /No MCP server is enabled.*\nNot available in pi: figma-rest/, "unset key: the Bridge would start the server with an empty key");
+    assert.doesNotMatch(s, /REST API/, "no figma-rest hint while it is unavailable");
+    s = mcpBoundarySection(dir, { PATH: bin, FIGMA_TEST_KEY: "x" })!;
+    assert.match(s, /Available: figma-rest \(direct tools figma-rest_\*\)\./);
+    assert.match(s, /figma-rest_get_figma_data\(fileKey, nodeId\)/);
+    assert.match(s, /node-id 1-2 is nodeId 1:2/);
+    s = mcpBoundarySection(dir, { PATH: "/nonexistent", FIGMA_TEST_KEY: "x" })!;
+    assert.match(s, /Not available in pi: figma-rest/, "a bare command must be on PATH, as pin doctor checks");
+    write({ command: basename(process.execPath), env: { PROMPT: "$HOME" }, directTools: true });
+    s = mcpBoundarySection(dir, { PATH: bin })!;
+    assert.match(s, /Available: figma-rest/, "a bare $VAR may be a deliberate literal: pin doctor warns, startup-check does not disable");
+    write({ command: basename(process.execPath), args: ["--stdio"], env: { FIGMA_API_KEY: "${FIGMA_TEST_KEY}", FRAMELINK_TELEMETRY: "off" }, directTools: true });
+    assert.deepEqual(missingByFile(dir, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh" }), [["mcp.json", ["FIGMA_TEST_KEY"]]]);
+    assert.deepEqual(missingByFile(dir, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh", FIGMA_TEST_KEY: "x" }), []);
+    write({ url: "https://mcp.deepwiki.com/mcp" });
+    assert.deepEqual(missingByFile(dir, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh" }), [], "servers without env reference nothing");
+  });
 });

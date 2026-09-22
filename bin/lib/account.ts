@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountAgentDir, configEnvRefs, envRefs, expandTilde, loadConfig, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/config.ts";
+import { accountAgentDir, configEnvRefs, envRefs, expandTilde, KIMI_CU_PLACEHOLDER, loadConfig, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, mcpBareRefs, mcpEnvRefs, mcpServerEnvRefs, proxyEnvLookup, proxyEnvState, readMcpConfig, type ProxyEnv, resolveCommand, resolveKimiCuBin, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/config.ts";
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -28,8 +28,45 @@ export function drift(template: Json, account: Json, prefix = ""): string[] {
   return out;
 }
 
-/** Files setup copies verbatim. adonis-pi.json is different: it is merged over the template at runtime, so the account keeps only overrides. */
-const COPIED_FILES = TEMPLATED_FILES.filter((f) => f !== "adonis-pi.json");
+/**
+ * Files setup copies verbatim. adonis-pi.json is different: it is merged over the template at runtime, so the account
+ * keeps only overrides. mcp.json is copied with the KimiCU placeholder resolved to this machine's executable.
+ */
+const COPIED_FILES = TEMPLATED_FILES.filter((f) => f !== "adonis-pi.json" && f !== "mcp.json");
+
+/** Template mcp.json with the placeholder replaced; unresolved when KimiCU is not installed (doctor reports it). */
+export function renderMcpTemplate(env: NodeJS.ProcessEnv = process.env): { text: string; kimiCuBin: string | undefined } {
+  const text = readFileSync(join(TEMPLATES_DIR, "mcp.json"), "utf8");
+  const kimiCuBin = resolveKimiCuBin(env);
+  return { text: kimiCuBin ? text.replaceAll(JSON.stringify(KIMI_CU_PLACEHOLDER), JSON.stringify(kimiCuBin)) : text, kimiCuBin };
+}
+
+/** A URL for log lines: scheme, host and path only, so embedded credentials or tokens in the query never reach the terminal. */
+function redactUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}${u.search || u.username || u.password ? " (credentials/query hidden)" : ""}`;
+  } catch {
+    return "(unparseable url)";
+  }
+}
+
+/** The MCP Bridge as pi installed it under <agentDir>/npm, or undefined. */
+export function installedAdapter(agentDir: string): { dir: string; version: string } | undefined {
+  const dir = join(agentDir, "npm", "node_modules", MCP_ADAPTER_NAME);
+  const pkg = join(dir, "package.json");
+  if (!existsSync(pkg)) return undefined;
+  try {
+    return { dir, version: String(readJson(pkg).version ?? "") };
+  } catch {
+    return { dir, version: "" };
+  }
+}
+
+/** The `npm:pi-mcp-adapter…` entries in settings.json packages (any version). */
+function adapterEntries(packages: string[]): string[] {
+  return packages.filter((p) => p === `npm:${MCP_ADAPTER_NAME}` || p.startsWith(`npm:${MCP_ADAPTER_NAME}@`));
+}
 
 function packagesOf(settingsPath: string): string[] {
   const j = readJson(settingsPath);
@@ -59,12 +96,18 @@ function which(name: string): string | undefined {
   return undefined;
 }
 
-/** Env vars the account references: models.json values plus the effective Config (account merged over template). */
+/** Env vars the account references: models.json values, the effective Config (account merged over template), and MCP server `env` blocks. */
 export function refsByFile(dir: string): [string, string[]][] {
   const out: [string, string[]][] = [];
   const models = join(dir, "models.json");
   if (existsSync(models)) out.push(["models.json", envRefs(readFileSync(models, "utf8"))]);
   out.push(["adonis-pi.json", configEnvRefs(join(dir, "adonis-pi.json"))]);
+  const mcp = join(dir, "mcp.json");
+  if (existsSync(mcp)) {
+    try {
+      out.push(["mcp.json", mcpEnvRefs(readMcpConfig(mcp))]);
+    } catch {} // doctor reports the broken file itself
+  }
   return out;
 }
 export function accountRefs(dir: string): string[] {
@@ -82,6 +125,13 @@ function setup(n: number, pinRoot: string): void {
       console.log(`write ${dest}`);
     }
   }
+  const mcpDest = join(d, "mcp.json");
+  if (existsSync(mcpDest)) console.log(`keep  ${mcpDest}`);
+  else {
+    const { text, kimiCuBin } = renderMcpTemplate();
+    writeFileSync(mcpDest, text);
+    console.log(kimiCuBin ? `write ${mcpDest} (kimi-cu -> ${kimiCuBin})` : `write ${mcpDest} (KimiCU not found; kimi-cu keeps the ${KIMI_CU_PLACEHOLDER} placeholder, see pin doctor)`);
+  }
   const cfgDest = join(d, "adonis-pi.json");
   if (existsSync(cfgDest)) console.log(`keep  ${cfgDest}`);
   else {
@@ -98,6 +148,23 @@ function setup(n: number, pinRoot: string): void {
   // chmod is the one thing setup changes on an existing file: a readable proxy.env is a leak, not a preference.
   if ((statSync(proxy).mode & 0o777) !== 0o600) chmodSync(proxy, 0o600);
   console.log(`packages: ${addPackage(join(d, "settings.json"), pinRoot)}`);
+  console.log(`packages: ${MCP_ADAPTER_PACKAGE} ${addPackage(join(d, "settings.json"), MCP_ADAPTER_PACKAGE)}`);
+  // pi installs user-level npm packages only through `pi install`, never on startup; run it once so the Bridge exists.
+  const adapter = installedAdapter(d);
+  if (adapter?.version === MCP_ADAPTER_VERSION) console.log(`keep  ${adapter.dir} (${adapter.version})`);
+  else if (process.env.PIN_SKIP_INSTALL === "1") console.log(`note  ${MCP_ADAPTER_NAME} ${adapter?.version ?? "not installed"}; install skipped (PIN_SKIP_INSTALL)`);
+  else {
+    const pi = which("pi");
+    if (!pi) console.log(`note  pi not on PATH; run later: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE}`);
+    else {
+      try {
+        execFileSync(pi, ["install", MCP_ADAPTER_PACKAGE], { env: { ...process.env, PI_CODING_AGENT_DIR: d }, stdio: "inherit" });
+        console.log(`install ${MCP_ADAPTER_PACKAGE} -> ${installedAdapter(d)?.dir ?? "(location unknown; see pin doctor)"}`);
+      } catch (e) {
+        console.log(`note  pi install failed (${(e as Error).message}); run later: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE}`);
+      }
+    }
+  }
   const cfgPath = join(d, "adonis-pi.json");
   let agentsMd = "";
   try {
@@ -165,14 +232,19 @@ function doctor(n: number, pinRoot: string): number {
     }
   }
   const proxy = join(d, "proxy.env");
+  // What proxy.env will leave for pi, judged statically: set / empty / unknown (needs shell evaluation, which doctor never runs).
+  let envState: ProxyEnv = { state: new Map(), certain: true };
   if (existsSync(proxy)) {
     const mode = statSync(proxy).mode & 0o777;
     if (mode === 0o600) ok("proxy.env mode 600");
     else fail(`proxy.env mode is ${mode.toString(8)}, must be 600`);
-    const text = readFileSync(proxy, "utf8");
+    envState = proxyEnvState(readFileSync(proxy, "utf8"));
+    if (!envState.certain) warn("proxy.env has lines doctor cannot parse (only `export NAME=value`, `NAME=value`, `unset NAME` and comments are understood); variable checks below are reported as unknown");
     for (const [file, vars] of refsByFile(d)) {
       for (const v of vars) {
-        if (new RegExp(`^export ${v}=.+`, "m").test(text)) ok(`${file} $${v} provided`);
+        const st = proxyEnvLookup(envState, v);
+        if (st === "set") ok(`${file} $${v} provided`);
+        else if (st === "unknown") warn(`${file} $${v} is computed when proxy.env is sourced; doctor cannot check it (PIN_DRY_RUN=1 pin ${n} shows set/unset)`);
         else warn(`${file} references $${v} but proxy.env leaves it empty`);
       }
     }
@@ -183,6 +255,43 @@ function doctor(n: number, pinRoot: string): number {
     if (packages.includes(pinRoot)) ok(`settings.json packages includes ${pinRoot}`);
     else fail(`settings.json packages lacks ${pinRoot} (run: pin setup ${n})`);
     for (const p of packages) if (p.startsWith("/") && !existsSync(p)) warn(`settings.json packages entry ${p} does not exist on disk`);
+    const entries = adapterEntries(packages);
+    if (entries.length === 1 && entries[0] === MCP_ADAPTER_PACKAGE) ok(`settings.json packages pins ${MCP_ADAPTER_PACKAGE}`);
+    else if (entries.length === 0) fail(`settings.json packages lacks ${MCP_ADAPTER_PACKAGE} (run: pin setup ${n})`);
+    else fail(`settings.json packages has ${entries.join(", ")}; expected exactly ${MCP_ADAPTER_PACKAGE} (edit settings.json, then: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
+    const adapter = installedAdapter(d);
+    if (!adapter) fail(`${MCP_ADAPTER_NAME} not installed under ${join(d, "npm")} (run: pin setup ${n})`);
+    else if (adapter.version === MCP_ADAPTER_VERSION) ok(`${MCP_ADAPTER_NAME} ${adapter.version} installed`);
+    else fail(`${MCP_ADAPTER_NAME} ${adapter.version || "?"} installed, template pins ${MCP_ADAPTER_VERSION} (run: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
+  }
+  const mcpPath = join(d, "mcp.json");
+  if (existsSync(mcpPath)) {
+    try {
+      const servers = readMcpConfig(mcpPath).mcpServers;
+      for (const [name, srv] of Object.entries(servers)) {
+        if (srv.disabled) {
+          ok(`mcp.json ${name} disabled`);
+          continue;
+        }
+        // The same three tests startup-check applies, so the two never disagree about what is usable (PATH is this shell's;
+        // a proxy.env that changes PATH is not modelled here).
+        const refs = mcpServerEnvRefs(srv);
+        const unset = refs.filter((v) => proxyEnvLookup(envState, v) === "empty");
+        const unknown = refs.filter((v) => proxyEnvLookup(envState, v) === "unknown");
+        const target = srv.command ?? (srv.url ? redactUrl(srv.url) : undefined);
+        // A whole-string "$VAR" may be a mis-written reference (the Bridge sends it literally) or a deliberate literal: warn, never disable.
+        const bare = mcpBareRefs(srv);
+        if (bare.length) warn(`mcp.json ${name} has bare ${bare.map((v) => `$${v}`).join(", ")}; the MCP Bridge sends that literally — if a variable was meant, write ${bare.map((v) => `\${${v}}`).join(", ")}`);
+        if (srv.command === KIMI_CU_PLACEHOLDER) fail(`mcp.json ${name} command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`);
+        else if (srv.command !== undefined && resolveCommand(srv.command) === undefined) fail(`mcp.json ${name} command ${srv.command} ${srv.command.length === 0 ? "is empty" : srv.command.includes("/") ? "is not an executable file" : "is not an executable on PATH"}`);
+        else if (target === undefined) warn(`mcp.json ${name} has neither command nor url`);
+        else if (unset.length) warn(`mcp.json ${name} -> ${target} but proxy.env does not set ${unset.map((v) => `$${v}`).join(", ")} (unavailable until it does)`);
+        else if (unknown.length) warn(`mcp.json ${name} -> ${target}; availability depends on ${unknown.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`);
+        else ok(`mcp.json ${name} -> ${target}${refs.length ? ` (env: ${refs.map((v) => `$${v}`).join(", ")})` : ""}`);
+      }
+    } catch (e) {
+      fail(`mcp.json invalid: ${(e as Error).message}`);
+    }
   }
   const link = join(d, "AGENTS.md");
   try {

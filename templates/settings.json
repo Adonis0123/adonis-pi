@@ -1,5 +1,7 @@
 {
-  "packages": [],
+  "packages": [
+    "npm:pi-mcp-adapter@2.36.0"
+  ],
   "defaultProvider": "openai-codex",
   "quietStartup": true,
   "enableInstallTelemetry": false

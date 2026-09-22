@@ -23,7 +23,7 @@
 
 ### 不做（第二阶段候选）
 
-- MCP 客户端桥（figma、kimi-cu 是真实缺口，deepwiki / github 用量极低可不做）
+- ~~MCP 客户端桥~~ → 第二阶段已做，见 `2026-09-22-adonis-pi-phase2-mcp.md` 与 ADR 0003（kimi-cu、deepwiki 启用；figma 因客户端白名单不接）
 - sub-agent / 任务委派
 - plan / todo 工具
 - 多账号目录（`~/.pi-002` 起）接入 `acc`

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,8 @@ export interface PermissionGateConfig {
   mode: "ask" | "block" | "off";
   denyCommands: string[];
   protectedPaths: string[];
+  /** Globs on MCP tool names as the MCP Bridge registers them (`<server>_<tool>`): direct tools by their own name, proxy calls by the `tool` argument of the `mcp` meta-tool. */
+  denyTools: string[];
 }
 export interface NotifyConfig {
   command: string | undefined;
@@ -46,7 +48,223 @@ export function accountAgentDir(n: number, home: string = homedir()): string {
 }
 
 /** Account Layer files that have a Template in this repo (ADR 0002 rule 2). */
-export const TEMPLATED_FILES = ["settings.json", "models.json", "adonis-pi.json"] as const;
+export const TEMPLATED_FILES = ["settings.json", "models.json", "adonis-pi.json", "mcp.json"] as const;
+
+/** The MCP Bridge (ADR 0003), pinned: `pi update --all` skips versioned specs, so upgrades are a Template change reported by `pin doctor`. */
+export const MCP_ADAPTER_NAME = "pi-mcp-adapter";
+export const MCP_ADAPTER_VERSION = "2.36.0";
+export const MCP_ADAPTER_PACKAGE = `npm:${MCP_ADAPTER_NAME}@${MCP_ADAPTER_VERSION}`;
+
+/** Placeholder in templates/mcp.json for the KimiCU executable; `pin setup` replaces it (the Repo Layer holds no machine paths). */
+export const KIMI_CU_PLACEHOLDER = "{{KIMI_CU_BIN}}";
+const KIMI_CU_CANDIDATES = ["/Applications/KimiCU.app/Contents/MacOS/kimi-cu", "~/Applications/KimiCU.app/Contents/MacOS/kimi-cu"];
+
+/** Where the KimiCU MCP executable lives on this machine: $ADONIS_PI_KIMI_CU_BIN when set (authoritative), else the app bundle, else PATH. */
+export function resolveKimiCuBin(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const override = env.ADONIS_PI_KIMI_CU_BIN;
+  if (override !== undefined) return existsSync(expandTilde(override)) ? expandTilde(override) : undefined;
+  for (const c of KIMI_CU_CANDIDATES) if (existsSync(expandTilde(c))) return expandTilde(c);
+  for (const dir of (env.PATH ?? "").split(":")) {
+    const p = join(dir, "kimi-cu");
+    if (dir && existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  /** Child environment. The MCP Bridge (pi-mcp-adapter 2.36.0) expands `${VAR}`, `$env:VAR` and `{env:VAR}` inside these strings (and url/headers/cwd) from pi's environment, which `pin` fills from proxy.env. It does not expand a bare `$VAR`. */
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  cwd?: string;
+  /** Per-call timeout for this server (ms); the Bridge falls back to the MCP SDK default (60 s) when absent. */
+  requestTimeoutMs?: number;
+  url?: string;
+  disabled?: boolean;
+  directTools?: boolean | string[];
+}
+
+/** The exact syntaxes pi-mcp-adapter 2.36.0 interpolates (utils.ts interpolateEnvVars); anything else is sent literally. */
+const MCP_ENV_REF = /\$\{(\w+)\}|\$env:(\w+)|\{env:(\w+)\}/g;
+/** A whole-string bare "$VAR": what models.json uses, but what the Bridge would pass through unexpanded. */
+const BARE_REF = /^\$([A-Za-z_][A-Za-z0-9_]*)$/;
+
+function mcpStrings(srv: McpServerConfig): string[] {
+  return [...Object.values(srv.env ?? {}), ...Object.values(srv.headers ?? {}), srv.url, srv.cwd].filter((v): v is string => typeof v === "string");
+}
+
+/** Environment variables a server's env/headers/url/cwd reference in a syntax the Bridge expands, sorted, deduplicated. */
+export function mcpServerEnvRefs(srv: McpServerConfig): string[] {
+  const found = new Set<string>();
+  for (const v of mcpStrings(srv)) for (const m of v.matchAll(MCP_ENV_REF)) found.add(m[1] ?? m[2] ?? m[3]);
+  return [...found].sort();
+}
+
+/** Bare "$VAR" values the Bridge would NOT expand: a config mistake doctor and startup-check must flag instead of counting as a reference. */
+export function mcpBareRefs(srv: McpServerConfig): string[] {
+  return [...new Set(mcpStrings(srv).map((v) => BARE_REF.exec(v)?.[1]).filter((v): v is string => v !== undefined))].sort();
+}
+
+/** Every variable any server references, over all servers (disabled ones too: doctor reports what the file asks for). */
+export function mcpEnvRefs(cfg: McpConfig): string[] {
+  return [...new Set(Object.values(cfg.mcpServers).flatMap(mcpServerEnvRefs))].sort();
+}
+
+/**
+ * What `. proxy.env` in bin/pin leaves for pi, judged statically per exported variable: "set" (non-empty literal),
+ * "empty", or "unknown" when the value needs shell evaluation ($VAR other than $HOME) that this parser will not run. Recognised lines: blank, `# comment`, `[export] NAME=word [# comment]` (quotes, backslashes, a later
+ * plain `NAME=` re-assignment keep their shell meaning; a `#` inside the word is literal), and `unset NAME…`. Any other
+ * line — a second command after `;`, `if`/`source`, `export A B`, a quote that runs past the line end — could change any
+ * variable, so the whole result degrades to "unknown" rather than report a confident wrong state. Variables assigned
+ * but never exported are not inherited by pi and are left out.
+ */
+export type ProxyEnvState = "set" | "empty" | "unknown";
+export interface ProxyEnv {
+  /** Exported variables with a state; names absent here were never exported (or were unset). */
+  state: Map<string, ProxyEnvState>;
+  /** False when a line could not be parsed, in which case every state above has already been degraded to "unknown" and absent names must be read as "unknown" too. */
+  certain: boolean;
+}
+/** The state of one variable as pi will see it: absent = "empty" in a fully parsed file, "unknown" otherwise. */
+export function proxyEnvLookup(env: ProxyEnv, name: string): ProxyEnvState {
+  return env.state.get(name) ?? (env.certain ? "empty" : "unknown");
+}
+export function proxyEnvState(text: string): ProxyEnv {
+  const exported = new Set<string>();
+  const state = new Map<string, ProxyEnvState>();
+  let certain = true;
+  // $HOME counts as a known non-empty value only while the file itself has not touched HOME.
+  let homeKnown = true;
+  if (text.includes("\r")) certain = false; // CRLF: the shell keeps \r as part of every value, so nothing here means what it looks like
+  for (const raw of text.split("\n")) {
+    // Only ASCII blanks are shell whitespace; String.trim() would also strip U+00A0 or \v, which the shell keeps as value.
+    const line = raw.replace(/^[ \t]+|[ \t]+$/g, "");
+    if (line === "" || line.startsWith("#")) continue;
+    if (line.endsWith("\\")) {
+      certain = false; // a continuation line: the statement spans lines
+      continue;
+    }
+    const un = /^unset\s+(.+)$/.exec(line);
+    if (un) {
+      const names = un[1].split(/\s+/);
+      if (names.every((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n))) {
+        for (const n of names) {
+          exported.delete(n);
+          state.delete(n);
+          if (n === "HOME") homeKnown = false;
+        }
+        continue;
+      }
+      certain = false;
+      continue;
+    }
+    const m = /^(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!m) {
+      certain = false;
+      continue;
+    }
+    const [, exp, name, rest] = m;
+    if (name === "HOME") homeKnown = false;
+    const word = shellWord(rest, homeKnown);
+    if (word === undefined) {
+      certain = false;
+      continue;
+    }
+    if (exp) exported.add(name);
+    state.set(name, word);
+  }
+  const out = new Map([...state].filter(([name]) => exported.has(name)));
+  if (!certain) for (const name of out.keys()) out.set(name, "unknown");
+  return { state: out, certain };
+}
+
+/**
+ * Classify one shell word (the right-hand side of an assignment) without evaluating it. Returns undefined when the
+ * line holds more than that word (another command after `;`/`&&`, a redirection, an unterminated quote continuing on
+ * the next line) or when an expansion could assign to some other variable (`${X:=word}`, `${X=word}`).
+ */
+function shellWord(rest: string, homeKnown = true): ProxyEnvState | undefined {
+  if (/\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(rest)) return undefined; // assigning expansion: side effect on another name
+  if (/\$\(|`/.test(rest)) return undefined; // command or arithmetic substitution: may run anything or assign ($((A=1)))
+  let value = "";
+  let dynamic = false;
+  let quote: '"' | "'" | undefined;
+  let i = 0;
+  const dollar = (): void => {
+    // $HOME / ${HOME} comes from the login shell pin runs in, so it is a known non-empty value; anything else needs evaluation.
+    const m = homeKnown ? /^\$(HOME\b|\{HOME\})/.exec(rest.slice(i)) : null;
+    if (m) {
+      value += "~";
+      i += m[0].length - 1;
+    } else dynamic = true;
+  };
+  for (; i < rest.length; i++) {
+    const c = rest[i];
+    if (quote === "'") {
+      if (c === "'") quote = undefined;
+      else value += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = undefined;
+      else if (c === "\\" && i + 1 < rest.length) value += rest[++i];
+      else if (c === "$") dollar();
+      else value += c;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "\\" && i + 1 < rest.length) value += rest[++i];
+    else if (c === " " || c === "\t") break; // unquoted whitespace ends the word
+    else if (c === ";" || c === "&" || c === "|" || c === "<" || c === ">") return undefined; // another command or a redirection follows: not a simple assignment line
+    else if (c === "$") dollar();
+    else value += c;
+  }
+  if (quote) return undefined; // the value continues on the next line
+  const tail = rest.slice(i).replace(/^[ \t]+|[ \t]+$/g, "");
+  if (tail !== "" && !tail.startsWith("#")) return undefined; // something other than a comment after the word
+  if (dynamic) return "unknown";
+  return value.length > 0 ? "set" : "empty";
+}
+
+/** Names proxy.env exports with a definitely non-empty value (compat wrapper over proxyEnvState). */
+export function proxyEnvProvided(text: string): Set<string> {
+  return new Set([...proxyEnvState(text).state].filter(([, st]) => st === "set").map(([n]) => n));
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    accessSync(p, constants.X_OK);
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where a stdio server's `command` resolves to an executable regular file on this machine, or undefined. A path
+ * (contains "/") must exist as given (after ~ expansion); a bare name such as `npx` is looked up on PATH the way the
+ * shell would (empty PATH entries are skipped, not read as ".").
+ */
+export function resolveCommand(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (command.length === 0) return undefined;
+  if (command.includes("/")) {
+    const p = expandTilde(command);
+    return isExecutableFile(p) ? p : undefined;
+  }
+  for (const dir of (env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    const p = join(dir, command);
+    if (isExecutableFile(p)) return p;
+  }
+  return undefined;
+}
+export interface McpConfig {
+  settings?: Record<string, unknown>;
+  mcpServers: Record<string, McpServerConfig>;
+}
+/** Read an mcp.json (Template or Account). Throws on malformed JSON or a missing mcpServers object. */
+export function readMcpConfig(path: string): McpConfig {
+  const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!isObject(raw) || !isObject(raw.mcpServers)) throw new ConfigError(`${path} must contain an mcpServers object`);
+  return raw as unknown as McpConfig;
+}
 
 /** Environment variables a JSON document references as whole-string "$VAR" / "${VAR}" values (keys such as "$schema" do not count), sorted, deduplicated. */
 export function envRefs(jsonText: string): string[] {
@@ -149,6 +367,7 @@ function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConf
   if (pg.mode !== "ask" && pg.mode !== "block" && pg.mode !== "off") throw new ConfigError('permissionGate.mode must be "ask", "block" or "off"');
   expectType("permissionGate.denyCommands", pg.denyCommands, "string[]");
   expectType("permissionGate.protectedPaths", pg.protectedPaths, "string[]");
+  expectType("permissionGate.denyTools", pg.denyTools, "string[]");
   for (const re of pg.denyCommands as string[]) {
     try {
       new RegExp(re);

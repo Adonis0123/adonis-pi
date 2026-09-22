@@ -55,6 +55,24 @@ export function segments(command: string): string[] {
   return out;
 }
 
+/** pi's own tools and this package's: everything else reaching the gate came from an Extension, i.e. the MCP Bridge. */
+const NATIVE_TOOLS = new Set(["bash", "powershell", "read", "write", "edit", "find", "grep", "ls", "AskUserQuestion"]);
+/** The `mcp` meta-tool of the MCP Bridge carries the real target in its `tool` argument; `mcpScript` is disabled in the Template (scriptMode false). */
+const PROXY_TOOLS = new Set(["mcp"]);
+
+/**
+ * The MCP tool a call targets, as `<server>_<tool>`: a direct tool is called by that name; a proxy call names it in
+ * `input.tool`. A proxy call without `tool` (search / describe / connect) is matched as the meta-tool itself (`mcp`),
+ * so a rule literally named `mcp` gates every Bridge operation; the shipped defaults never match it.
+ */
+export function mcpTarget(event: { toolName: string; input: Record<string, unknown> }): { name: string; args: unknown } | undefined {
+  if (PROXY_TOOLS.has(event.toolName)) {
+    return typeof event.input.tool === "string" ? { name: event.input.tool, args: event.input.args } : { name: event.toolName, args: event.input };
+  }
+  if (NATIVE_TOOLS.has(event.toolName)) return undefined;
+  return { name: event.toolName, args: event.input };
+}
+
 export function matchToolCall(
   event: { toolName: string; input: Record<string, unknown> },
   cfg: PermissionGateConfig,
@@ -68,6 +86,15 @@ export function matchToolCall(
       const hit = pieces.find((piece) => re.test(piece));
       if (hit !== undefined) {
         return { reason: `command matches denyCommands /${pattern}/`, detail: hit.trim() };
+      }
+    }
+    return undefined;
+  }
+  const mcp = mcpTarget(event);
+  if (mcp) {
+    for (const glob of cfg.denyTools) {
+      if (globToRegExp(glob).test(mcp.name)) {
+        return { reason: `MCP tool matches denyTools ${glob}`, detail: `${mcp.name} ${JSON.stringify(mcp.args ?? {}).slice(0, 200)}` };
       }
     }
     return undefined;
