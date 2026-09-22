@@ -42,12 +42,7 @@ export function decideNotification(h: Happened, notify: NotifyConfig, ref: Sessi
       return { args: plain, payload: buildPayload("question", ref, { tool_input: { questions: h.questions.map((q) => ({ question: q.question, header: q.header })) } }) };
     case "permission": {
       if (!k.confirm) return undefined;
-      const summary =
-        typeof h.input.command === "string" ? { command: h.input.command.slice(0, 200) }
-        : typeof h.input.path === "string" ? { path: h.input.path }
-        : typeof h.input.tool === "string" ? { tool: h.input.tool }
-        : {};
-      return { args: plain, payload: buildPayload("permission", ref, { tool_name: h.toolName, tool_input: summary }) };
+      return { args: plain, payload: buildPayload("permission", ref, { tool_name: h.toolName, tool_input: permissionSummary(h.input) }) };
     }
     case "settled": {
       const d = decideSettled(h.entries, k);
@@ -59,6 +54,14 @@ export function decideNotification(h: Happened, notify: NotifyConfig, ref: Sessi
       // Activity marks are never gated by kinds: they only tell the notifier the agent is still working.
       return { args: [...plain, "--mark"], payload: buildPayload("mark", ref, { tool_name: h.toolName }) };
   }
+}
+
+/** The one field of a gated call worth sending to the Notifier: the shell command, the file path, or the MCP tool name. */
+function permissionSummary(input: Record<string, unknown>): Record<string, string> {
+  if (typeof input.command === "string") return { command: input.command.slice(0, 200) };
+  if (typeof input.path === "string") return { path: input.path };
+  if (typeof input.tool === "string") return { tool: input.tool };
+  return {};
 }
 
 export type Spawn = (notify: NotifyConfig, args: string[], payload: Record<string, unknown>) => void;
@@ -106,7 +109,7 @@ export function createSession(ctx: SessionCtx, config: AdonisPiConfig, spawn: Sp
  * restart. A broken file falls back to the template with the Permission Gate forced to `block`: the account's own Deny
  * rules are unreadable, so nothing the default rules catch may slip through on a confirm. Reported once per file version.
  */
-export function brokenConfigFallback(): AdonisPiConfig {
+function brokenConfigFallback(): AdonisPiConfig {
   const cfg = loadTemplate();
   if (cfg.permissionGate.mode !== "off") cfg.permissionGate.mode = "block";
   return cfg;

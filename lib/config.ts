@@ -62,13 +62,9 @@ const KIMI_CU_CANDIDATES = ["/Applications/KimiCU.app/Contents/MacOS/kimi-cu", "
 /** Where the KimiCU MCP executable lives on this machine: $ADONIS_PI_KIMI_CU_BIN when set (authoritative), else the app bundle, else PATH. */
 export function resolveKimiCuBin(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const override = env.ADONIS_PI_KIMI_CU_BIN;
-  if (override !== undefined) return existsSync(expandTilde(override)) ? expandTilde(override) : undefined;
-  for (const c of KIMI_CU_CANDIDATES) if (existsSync(expandTilde(c))) return expandTilde(c);
-  for (const dir of (env.PATH ?? "").split(":")) {
-    const p = join(dir, "kimi-cu");
-    if (dir && existsSync(p)) return p;
-  }
-  return undefined;
+  if (override !== undefined) return isExecutableFile(expandTilde(override)) ? expandTilde(override) : undefined;
+  for (const c of KIMI_CU_CANDIDATES) if (isExecutableFile(expandTilde(c))) return expandTilde(c);
+  return resolveCommand("kimi-cu", env);
 }
 
 export interface McpServerConfig {
@@ -223,11 +219,6 @@ function shellWord(rest: string, homeKnown = true): ProxyEnvState | undefined {
   return value.length > 0 ? "set" : "empty";
 }
 
-/** Names proxy.env exports with a definitely non-empty value (compat wrapper over proxyEnvState). */
-export function proxyEnvProvided(text: string): Set<string> {
-  return new Set([...proxyEnvState(text).state].filter(([, st]) => st === "set").map(([n]) => n));
-}
-
 function isExecutableFile(p: string): boolean {
   try {
     accessSync(p, constants.X_OK);
@@ -258,6 +249,42 @@ export function resolveCommand(command: string, env: NodeJS.ProcessEnv = process
 export interface McpConfig {
   settings?: Record<string, unknown>;
   mcpServers: Record<string, McpServerConfig>;
+}
+
+/** How a caller sees one environment variable: `pin doctor` reads it off a static parse of proxy.env, pi reads its own process environment. */
+export type EnvView = (name: string) => ProxyEnvState;
+export const processEnvView =
+  (env: NodeJS.ProcessEnv): EnvView =>
+  (name) => (env[name] ? "set" : "empty");
+export const proxyEnvView =
+  (parsed: ProxyEnv): EnvView =>
+  (name) => proxyEnvLookup(parsed, name);
+
+/**
+ * The one verdict on whether an MCP Server can be reached from a pi launched on this account; `pin doctor` and
+ * startup-check only phrase it. `target` is the command or url as written (callers redact urls before printing).
+ */
+export type ServerStatus =
+  | { usable: true; target: string; refs: string[] }
+  | { usable: false; kind: "disabled" }
+  | { usable: false; kind: "placeholder"; command: string }
+  | { usable: false; kind: "no-target" }
+  | { usable: false; kind: "command-unresolved"; command: string }
+  | { usable: false; kind: "env-empty"; target: string; vars: string[] }
+  | { usable: false; kind: "env-unknown"; target: string; vars: string[] };
+
+export function serverStatus(srv: McpServerConfig, view: { env: EnvView; path?: string }): ServerStatus {
+  if (srv.disabled) return { usable: false, kind: "disabled" };
+  if (srv.command === KIMI_CU_PLACEHOLDER) return { usable: false, kind: "placeholder", command: srv.command };
+  const target = srv.command ?? srv.url;
+  if (target === undefined) return { usable: false, kind: "no-target" };
+  if (srv.command !== undefined && resolveCommand(srv.command, { PATH: view.path }) === undefined) return { usable: false, kind: "command-unresolved", command: srv.command };
+  const refs = mcpServerEnvRefs(srv);
+  const empty = refs.filter((v) => view.env(v) === "empty");
+  if (empty.length) return { usable: false, kind: "env-empty", target, vars: empty };
+  const unknown = refs.filter((v) => view.env(v) === "unknown");
+  if (unknown.length) return { usable: false, kind: "env-unknown", target, vars: unknown };
+  return { usable: true, target, refs };
 }
 /** Read an mcp.json (Template or Account). Throws on malformed JSON or a missing mcpServers object. */
 export function readMcpConfig(path: string): McpConfig {
@@ -383,6 +410,7 @@ function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConf
   for (const k of ["confirm", "fail", "idle"]) expectType(`notify.kinds.${k}`, kinds[k], "boolean");
   if (kinds.idle === true && kinds.confirm !== true) throw new ConfigError("notify.kinds.idle requires notify.kinds.confirm (the notifier decides confirm-vs-idle from the same Stop event)");
   expectType("notify.idleDelaySeconds", n.idleDelaySeconds, "number");
+  if (!Number.isInteger(n.idleDelaySeconds) || (n.idleDelaySeconds as number) < 0) throw new ConfigError("notify.idleDelaySeconds must be an integer >= 0");
   const aq = raw.askUserQuestion as Json;
   if (!isObject(aq)) throw new ConfigError("askUserQuestion must be an object");
   expectType("askUserQuestion.enabled", aq.enabled, "boolean");

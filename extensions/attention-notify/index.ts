@@ -2,7 +2,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getSession, type SessionDeps } from "../../lib/session.ts";
 import type { BranchEntry } from "../../lib/notify.ts";
 
-export { decideSettled, lastAssistantFromBranch } from "../../lib/notify.ts";
 
 export default function attentionNotify(pi: ExtensionAPI, deps: SessionDeps = {}) {
   pi.on("tool_result", async (event, ctx) => {

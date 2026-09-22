@@ -230,10 +230,15 @@ test("doctor resolves bare commands on PATH and checks mcp.json env references a
   assert.match(d.out, /^OK   mcp.json figma-rest -> npx \(env: \$FIGMA_API_KEY\)$/m, "a bare $VAR warns but does not make the server unavailable (it may be a deliberate literal)");
   delete mcp.mcpServers["figma-rest"].env.EXTRA;
   mcp.mcpServers["figma-rest"].command = "no-such-command-xyz";
+  mcp.mcpServers.ghost = {};
+  mcp.mcpServers.remote = { url: "https://user:secret@mcp.example.com/mcp?token=abc123" };
   writeFileSync(join(agent, "mcp.json"), JSON.stringify(mcp, null, 2));
   d = pin(home, ["doctor", "1"]);
   assert.equal(d.code, 1);
   assert.match(d.out, /^FAIL mcp.json figma-rest command no-such-command-xyz is not an executable on PATH$/m);
+  assert.match(d.out, /^WARN mcp.json ghost has neither command nor url \(unavailable\)$/m);
+  assert.match(d.out, /^OK   mcp.json remote -> https:\/\/mcp.example.com\/mcp \(credentials\/query hidden\)$/m);
+  assert.doesNotMatch(d.out, /secret|abc123/, "urls are redacted before printing");
 });
 
 test("doctor reports the pi version: OK on 0.87.x, WARN on anything else", () => {

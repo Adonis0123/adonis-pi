@@ -37,6 +37,7 @@ pi 能调用用户在其他 Host 上真实依赖、且 pi 没有替代品的 MCP
 - setup：写 `mcp.json`（占位符解析）；在 `settings.json` 的 `packages` 追加 `npm:pi-mcp-adapter@2.36.0`；若 `<账号>/npm/node_modules/pi-mcp-adapter` 不存在或版本不符，执行一次 `pi install`（用户级 npm 包 pi 不会在启动时自动安装）。`PIN_SKIP_INSTALL=1` 跳过安装（测试用）。
 - doctor：`packages` 必须恰好含一条 `npm:pi-mcp-adapter@<锁定版本>`；安装目录下 `package.json` 的 `version` 必须等于锁定版本；`mcp.json` 每个启用的 stdio 服务器 `command` 必须是可执行的普通文件（带 `/` 的按路径查，裸名字如 `npx` 按 doctor 所在 shell 的 PATH 查；空 PATH 项跳过），占位符未解析报 FAIL；`mcp.json` 参与 Drift 检查。
 - doctor 对 `mcp.json` 的环境变量引用按 adapter 2.36.0 的语法识别（`${VAR}`、`$env:VAR`、`{env:VAR}`，可嵌在字串中），对照 `proxy.env` 的静态解析结果（每个 `export` 变量三态：非空 / 空 / 需要 shell 求值的「无法判断」；只认 `export NAME=值`、`NAME=值`、`unset NAME`、注释四种行，支持前导空格、引号、反斜杠、词后 `# 注释`，词内 `#` 按字面量，`$HOME` 视为已知；出现任何其他行（`;` 后的第二条命令、重定向、行尾 `\` 续行、`if`、`source`、跨行引号、`${X:=…}` 这类会给别的变量赋值的展开等）整份文件降为「无法判断」；文件自己改过或 `unset` 过 HOME 后 `$HOME` 不再视为已知，宁可不判也不给错误结论；不执行任何 shell），空报 WARN 且该服务器一行写明 unavailable，无法判断时写明 doctor 不能求值、用 `PIN_DRY_RUN=1 pin` 看运行时；整串裸 `$VAR` adapter 不展开，只报 WARN 提示可能写错，不判不可用（它也可能是有意的字面量）。日志里的 URL 只打印 origin 和 path，隐藏 query 与内嵌凭证。`pin --dry-run` 也列出这些变量。已知差异：doctor 用当前 shell 的 PATH，运行时用加载 `proxy.env` 后的 PATH，`proxy.env` 改 PATH 的情况不建模。
+- 「可用与否」由 `lib/config.ts` 的 `serverStatus(server, {env, path})` 一处裁决（CONTEXT.md「Server Status」）：doctor 用 `proxy.env` 的静态解析作 env 视图，startup-check 用 pi 自己的进程环境；两处只负责措辞。
 - `pin` 启动时清掉继承的 `FIGMA_API_KEY` / `FIGMA_OAUTH_TOKEN`（Framelink 两者都设时优先用 OAuth token），与 provider key 一样只从 `proxy.env` 来。
 
 ### 3.4 startup-check：MCP 边界

@@ -1,10 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { agentDir, configEnvRefs, envRefs, KIMI_CU_PLACEHOLDER, mcpEnvRefs, mcpServerEnvRefs, missingEnvRefs, readMcpConfig, resolveCommand, type McpServerConfig } from "../../lib/config.ts";
+import { agentDir, configEnvRefs, mcpEnvRefs, missingEnvRefs, processEnvView, readMcpConfig, serverStatus, type McpServerConfig } from "../../lib/config.ts";
 import { surface } from "../../lib/session.ts";
 
-export { envRefs, missingEnvRefs };
 
 /** Which files of an account reference environment variables that `env` leaves unset: [file label, missing vars]. */
 export function missingByFile(dir: string, env: NodeJS.ProcessEnv): [string, string[]][] {
@@ -40,14 +39,9 @@ export function mcpBoundarySection(dir: string, env: NodeJS.ProcessEnv = process
   } catch {
     return undefined;
   }
-  // Same tests pin doctor applies: disabled, an unresolved placeholder, a command that is not an executable, or an unset
-  // variable the server needs (the Bridge would start it with an empty key and it would fail on first call) all mean
-  // "not here". A bare "$VAR" is only a doctor warning: it may be a deliberate literal, and the Bridge passes it through.
-  const usable = ([, s]: [string, McpServerConfig]) =>
-    !s.disabled &&
-    s.command !== KIMI_CU_PLACEHOLDER &&
-    (s.command === undefined || resolveCommand(s.command, env) !== undefined) &&
-    mcpServerEnvRefs(s).every((v) => Boolean(env[v]));
+  // One verdict shared with pin doctor (lib/config.ts serverStatus), read against pi's own environment and PATH.
+  const view = { env: processEnvView(env), path: env.PATH };
+  const usable = ([, s]: [string, McpServerConfig]) => serverStatus(s, view).usable;
   const entries = Object.entries(servers);
   const enabled = entries.filter(usable);
   const disabled = entries.filter((e) => !usable(e));

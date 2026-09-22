@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { accountAgentDir, agentDir, ConfigError, envRefs, expandTilde, loadConfig, loadTemplate, mcpBareRefs, mcpEnvRefs, mcpServerEnvRefs, missingEnvRefs, proxyEnvLookup, proxyEnvProvided, proxyEnvState, readMcpConfig, resolveCommand, resolveEnvRef, TEMPLATES_DIR } from "../lib/config.ts";
+import { accountAgentDir, agentDir, ConfigError, envRefs, expandTilde, loadConfig, loadTemplate, mcpBareRefs, mcpEnvRefs, mcpServerEnvRefs, missingEnvRefs, processEnvView, proxyEnvLookup, proxyEnvState, proxyEnvView, readMcpConfig, resolveCommand, resolveEnvRef, resolveKimiCuBin, serverStatus, TEMPLATES_DIR } from "../lib/config.ts";
 
 test("agentDir honours PI_CODING_AGENT_DIR and expands ~", () => {
   assert.equal(agentDir({ PI_CODING_AGENT_DIR: "~/.pi-002/agent" }), join(homedir(), ".pi-002/agent"));
@@ -164,7 +164,7 @@ test("proxyEnvState mirrors what `. proxy.env` leaves for pi: set / empty / unkn
   assert.equal(proxyEnvState("export C=x \u00a0\n").certain, false, "a stray non-ASCII blank after the word is a second argument to export: not a simple line");
   const noHome = proxyEnvState("unset HOME\nexport A=$HOME/x\nexport HOME=/tmp\nexport B=$HOME/y");
   assert.deepEqual(Object.fromEntries(noHome.state), { A: "unknown", HOME: "set", B: "unknown" }, "$HOME is only known while the file leaves HOME alone");
-  assert.deepEqual([...proxyEnvProvided(text)].sort(), ["A", "D", "E", "I", "J", "L", "M", "N"]);
+  assert.deepEqual([...env.state].filter(([, st]) => st === "set").map(([n]) => n), ["A", "D", "E", "I", "J", "L", "M", "N"]);
 });
 
 test("proxyEnvState degrades to unknown instead of guessing when a line is not a simple assignment", () => {
@@ -187,7 +187,7 @@ test("proxyEnvState degrades to unknown instead of guessing when a line is not a
     assert.equal(env.certain, false, text);
     assert.equal(proxyEnvLookup(env, "A"), "unknown", text);
     assert.equal(proxyEnvLookup(env, "NEVER_MENTIONED"), "unknown", `${text}: an unparsed line could have set anything`);
-    assert.deepEqual([...proxyEnvProvided(text)], [], text);
+    assert.equal([...env.state.values()].every((st) => st === "unknown"), true, text);
   }
 });
 
@@ -200,4 +200,36 @@ test("the MCP template pins Framelink, references the Figma key by variable only
   assert.equal(cfg.mcpServers["figma-rest"].env?.FRAMELINK_TELEMETRY, "off");
   assert.equal(cfg.mcpServers.figma.disabled, true, "the official remote server stays a disabled placeholder");
   assert.doesNotMatch(text, /figd_/, "no token in the Repo Layer");
+});
+
+test("serverStatus is the single verdict doctor and startup-check present: disabled, placeholder, no target, bad command, empty or unknown env", () => {
+  const bin = dirname(process.execPath);
+  const cmd = basename(process.execPath);
+  const view = { env: processEnvView({ KEY: "x", EMPTY: "" }), path: bin };
+  assert.deepEqual(serverStatus({ command: cmd, env: { A: "${KEY}" } }, view), { usable: true, target: cmd, refs: ["KEY"] });
+  assert.deepEqual(serverStatus({ url: "https://h/x" }, view), { usable: true, target: "https://h/x", refs: [] });
+  assert.deepEqual(serverStatus({ command: cmd, disabled: true }, view), { usable: false, kind: "disabled" });
+  assert.deepEqual(serverStatus({ command: "{{KIMI_CU_BIN}}" }, view), { usable: false, kind: "placeholder", command: "{{KIMI_CU_BIN}}" });
+  assert.deepEqual(serverStatus({}, view), { usable: false, kind: "no-target" }, "neither command nor url is unusable for both presenters");
+  assert.deepEqual(serverStatus({ command: "no-such-command-xyz" }, view), { usable: false, kind: "command-unresolved", command: "no-such-command-xyz" });
+  assert.deepEqual(serverStatus({ command: cmd, env: { A: "${EMPTY}", B: "${MISSING}" } }, view), { usable: false, kind: "env-empty", target: cmd, vars: ["EMPTY", "MISSING"] });
+  const parsed = proxyEnvState("export KEY=$OTHER\n");
+  assert.deepEqual(serverStatus({ command: cmd, env: { A: "${KEY}" } }, { env: proxyEnvView(parsed), path: bin }), { usable: false, kind: "env-unknown", target: cmd, vars: ["KEY"] });
+  assert.deepEqual(serverStatus({ command: cmd, env: { A: "$HOME" } }, view), { usable: true, target: cmd, refs: [] }, "a bare $VAR is not a reference; the Bridge passes it through");
+});
+
+test("resolveKimiCuBin only accepts executable files, from the override, the app bundle or PATH", () => {
+  assert.equal(resolveKimiCuBin({ ADONIS_PI_KIMI_CU_BIN: dirname(process.execPath) }), undefined, "a directory is not the executable");
+  assert.equal(resolveKimiCuBin({ ADONIS_PI_KIMI_CU_BIN: process.execPath }), process.execPath);
+});
+
+test("loadConfig enforces the schema's idleDelaySeconds constraint: integer >= 0", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
+  const file = join(dir, "adonis-pi.json");
+  for (const bad of [-1, 1.5]) {
+    writeFileSync(file, JSON.stringify({ notify: { idleDelaySeconds: bad } }));
+    assert.throws(() => loadConfig({ path: file }), /idleDelaySeconds must be an integer >= 0/);
+  }
+  writeFileSync(file, JSON.stringify({ notify: { idleDelaySeconds: 0 } }));
+  assert.equal(loadConfig({ path: file }).notify.idleDelaySeconds, 0);
 });

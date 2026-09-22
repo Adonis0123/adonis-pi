@@ -48,6 +48,7 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 - **MCP Server（MCP 服务器）**：通过 MCP 协议向宿主提供工具的外部进程或 HTTP 服务。第二阶段启用三个：kimi-cu（macOS 桌面操作）、deepwiki、figma-rest（经 Figma REST API 只读设计文件）；figma（Figma 官方远程服务器）只保留禁用占位，不接。
 - **MCP Bridge（MCP 桥）**：让 pi 具备 MCP 客户端能力的 Pi Package。本仓不实现 MCP 协议，只依赖并配置一个现成的 Bridge（ADR 0003 选 `pi-mcp-adapter`，版本锁在 Template 里）。
 - **MCP Config**：Account Layer 里的 `mcp.json`，MCP Bridge 的唯一配置入口，列出该账号启用的 MCP Server。有 Template，受 Drift 检查。
+- **Server Status（服务器状态）**：对一个 MCP Server「此账号启动的 pi 能否用到它」的唯一裁决：可用，或不可用及原因（已禁用、占位符未解析、无 command 也无 url、命令不可执行、所需变量为空或无法判断）。`pin doctor` 与启动检查只呈现这个裁决，不各自判断。
 - **CLI Facade（命令行门面）**：把一个 MCP Server 包成命令行程序、由 Skill 调用的方式。机器上 chrome-devtools 走这条路，pi 沿用；本仓不为其他 MCP Server 新建 Facade。
 
 ## 验收

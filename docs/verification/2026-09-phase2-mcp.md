@@ -71,3 +71,14 @@
 ## Codex 复审第六轮（2026-09-22 晚）
 
 第五轮的三项修复全部确认；新增发现为零；第 3 条剩一个：`trim()` 会删掉 U+00A0（不换行空格）和 `\v`，shell 却把它们留在值里。修：只删 ASCII 空格和制表符；补测试。此修复未再送 Codex 复审。六轮下来 Codex 对 figma-rest 增量本身没有剩余发现，反复卡在 doctor 的 `proxy.env` 静态解析这一条上，每轮给出的都是更冷门的 shell 角落用例；所有报出的用例都已修并有回归测试，是否继续投入由用户决定。
+
+## 提交后评审与架构修复（2026-09-22 晚）
+
+`8a603e8` 推送后跑了两份评审：OCR delegate（commit 模式，10 个可评审文件全看，11 个文档 / 测试文件按规则排除）与 codebase-design 架构评审（子代理探查 + 本会话核实，报告为本机临时 HTML）。用户决定：能修的全修，Strong 候选照改。
+
+- Strong 候选「MCP Server 可用性收成一个 module」：`lib/config.ts` 新增 `serverStatus(server, {env, path})`，返回可用或不可用及原因（disabled / placeholder / no-target / command-unresolved / env-empty / env-unknown）；`pin doctor` 用 `proxy.env` 静态解析作 env 视图，startup-check 用进程环境，两处只做措辞。实证过的分歧（无 command 无 url 的服务器一边 WARN 一边 Available）消失。CONTEXT.md 加「Server Status」。
+- OCR Medium：三处 PATH 扫描收成 `resolveCommand` 一处（`which`、`resolveKimiCuBin` 改用，只认可执行普通文件）。
+- OCR Low：`idleDelaySeconds` 的 TS 校验补上 schema 已有的「整数且 ≥ 0」；`redactUrl` 通过 doctor 测试覆盖（含凭证与 query 的 url 只打印 origin + path）；session.ts 与 account.ts 的嵌套三元改为函数；删掉无生产调用的 `proxyEnvProvided`、只为测试的两处 re-export（attention-notify、startup-check）和无导入方的 `export`（account.ts 五个、`brokenConfigFallback`、`mcpTarget`），测试改从真正的 module 导入。
+- 不改：权限门 `detail` 里的 MCP 参数只进 TUI 确认框，不进 Notifier（Notifier 收到的是 session.ts 的 summary），原 Low 不成立；JSON 文件的空白重排已提交，不再回改。
+
+结果：`npm test` 104 通过，typecheck、leak-check 通过；账号 1 `pin doctor 1` 全 OK；真机启动后 system prompt 边界节仍列出 kimi-cu、deepwiki、figma-rest 可用、figma 不可用。剩余候选（拆 `lib/config.ts`、doctor 结构化记录、账号引用统一、proxy.env 解析对 sh 做 oracle）未动。

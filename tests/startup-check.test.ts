@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createFakePi, fakeCtx } from "./helpers/fake-pi.ts";
-import startupCheck, { envRefs, missingByFile, missingEnvRefs } from "../extensions/startup-check/index.ts";
+import startupCheck, { missingByFile } from "../extensions/startup-check/index.ts";
 
 const models = JSON.stringify({
   providers: {
@@ -12,16 +12,6 @@ const models = JSON.stringify({
     kimi: { apiKey: "${KIMI_API_KEY}", models: [] },
     local: { apiKey: "literal-key", models: [] },
   },
-});
-
-test("envRefs lists each $VAR once, sorted, ignoring literal keys", () => {
-  assert.deepEqual(envRefs(models), ["GLM_API_KEY", "KIMI_API_KEY"]);
-  assert.deepEqual(envRefs("{ not json"), []);
-});
-
-test("missingEnvRefs treats empty strings as missing", () => {
-  assert.deepEqual(missingEnvRefs(models, { GLM_API_KEY: "x", KIMI_API_KEY: "" }), ["KIMI_API_KEY"]);
-  assert.deepEqual(missingEnvRefs(models, { GLM_API_KEY: "x", KIMI_API_KEY: "y" }), []);
 });
 
 async function withAgentDir(modelsText: string | undefined, env: Record<string, string>, run: (dir: string) => Promise<void>, configText?: string) {
@@ -170,5 +160,7 @@ test("figma-rest is available only when its bare command resolves on PATH and ev
     assert.deepEqual(missingByFile(dir, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh", FIGMA_TEST_KEY: "x" }), []);
     write({ url: "https://mcp.deepwiki.com/mcp" });
     assert.deepEqual(missingByFile(dir, { ADONIS_PI_NOTIFY_CMD: "/opt/notify.sh" }), [], "servers without env reference nothing");
+    write({});
+    assert.match(mcpBoundarySection(dir, { PATH: bin })!, /No MCP server is enabled.*\nNot available in pi: figma-rest/, "neither command nor url: unavailable here exactly as pin doctor says");
   });
 });

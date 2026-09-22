@@ -65,7 +65,7 @@ const PROXY_TOOLS = new Set(["mcp"]);
  * `input.tool`. A proxy call without `tool` (search / describe / connect) is matched as the meta-tool itself (`mcp`),
  * so a rule literally named `mcp` gates every Bridge operation; the shipped defaults never match it.
  */
-export function mcpTarget(event: { toolName: string; input: Record<string, unknown> }): { name: string; args: unknown } | undefined {
+function mcpTarget(event: { toolName: string; input: Record<string, unknown> }): { name: string; args: unknown } | undefined {
   if (PROXY_TOOLS.has(event.toolName)) {
     return typeof event.input.tool === "string" ? { name: event.input.tool, args: event.input.args } : { name: event.toolName, args: event.input };
   }

@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountAgentDir, configEnvRefs, envRefs, expandTilde, KIMI_CU_PLACEHOLDER, loadConfig, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, mcpBareRefs, mcpEnvRefs, mcpServerEnvRefs, proxyEnvLookup, proxyEnvState, readMcpConfig, type ProxyEnv, resolveCommand, resolveKimiCuBin, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/config.ts";
+import { accountAgentDir, configEnvRefs, envRefs, expandTilde, KIMI_CU_PLACEHOLDER, loadConfig, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, mcpBareRefs, mcpEnvRefs, proxyEnvLookup, proxyEnvState, proxyEnvView, readMcpConfig, type ProxyEnv, resolveCommand, resolveKimiCuBin, serverStatus, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/config.ts";
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -17,7 +17,7 @@ const readJson = (p: string): Json => JSON.parse(readFileSync(p, "utf8"));
  * Template keys the account file lacks (a template update the account has not adopted). Extra account keys are not
  * drift: pi and the user legitimately add their own (theme, defaultModel, skills, lastChangelogVersion…).
  */
-export function drift(template: Json, account: Json, prefix = ""): string[] {
+function drift(template: Json, account: Json, prefix = ""): string[] {
   const out: string[] = [];
   for (const k of Object.keys(template)) {
     if (k === "$schema" || k === "packages") continue;
@@ -35,10 +35,16 @@ export function drift(template: Json, account: Json, prefix = ""): string[] {
 const COPIED_FILES = TEMPLATED_FILES.filter((f) => f !== "adonis-pi.json" && f !== "mcp.json");
 
 /** Template mcp.json with the placeholder replaced; unresolved when KimiCU is not installed (doctor reports it). */
-export function renderMcpTemplate(env: NodeJS.ProcessEnv = process.env): { text: string; kimiCuBin: string | undefined } {
+function renderMcpTemplate(env: NodeJS.ProcessEnv = process.env): { text: string; kimiCuBin: string | undefined } {
   const text = readFileSync(join(TEMPLATES_DIR, "mcp.json"), "utf8");
   const kimiCuBin = resolveKimiCuBin(env);
   return { text: kimiCuBin ? text.replaceAll(JSON.stringify(KIMI_CU_PLACEHOLDER), JSON.stringify(kimiCuBin)) : text, kimiCuBin };
+}
+
+function describeUnresolved(command: string): string {
+  if (command.length === 0) return "is empty";
+  if (command.includes("/")) return "is not an executable file";
+  return "is not an executable on PATH";
 }
 
 /** A URL for log lines: scheme, host and path only, so embedded credentials or tokens in the query never reach the terminal. */
@@ -52,7 +58,7 @@ function redactUrl(url: string): string {
 }
 
 /** The MCP Bridge as pi installed it under <agentDir>/npm, or undefined. */
-export function installedAdapter(agentDir: string): { dir: string; version: string } | undefined {
+function installedAdapter(agentDir: string): { dir: string; version: string } | undefined {
   const dir = join(agentDir, "npm", "node_modules", MCP_ADAPTER_NAME);
   const pkg = join(dir, "package.json");
   if (!existsSync(pkg)) return undefined;
@@ -86,18 +92,11 @@ function addPackage(settingsPath: string, pkg: string): "present" | "added" {
 }
 
 function which(name: string): string | undefined {
-  for (const dir of (process.env.PATH ?? "").split(":")) {
-    const p = join(dir, name);
-    try {
-      accessSync(p, constants.X_OK);
-      if (statSync(p).isFile()) return p;
-    } catch {}
-  }
-  return undefined;
+  return resolveCommand(name, process.env);
 }
 
 /** Env vars the account references: models.json values, the effective Config (account merged over template), and MCP server `env` blocks. */
-export function refsByFile(dir: string): [string, string[]][] {
+function refsByFile(dir: string): [string, string[]][] {
   const out: [string, string[]][] = [];
   const models = join(dir, "models.json");
   if (existsSync(models)) out.push(["models.json", envRefs(readFileSync(models, "utf8"))]);
@@ -110,7 +109,7 @@ export function refsByFile(dir: string): [string, string[]][] {
   }
   return out;
 }
-export function accountRefs(dir: string): string[] {
+function accountRefs(dir: string): string[] {
   return [...new Set(refsByFile(dir).flatMap(([, vars]) => vars))].sort();
 }
 
@@ -268,26 +267,22 @@ function doctor(n: number, pinRoot: string): number {
   if (existsSync(mcpPath)) {
     try {
       const servers = readMcpConfig(mcpPath).mcpServers;
+      const view = { env: proxyEnvView(envState), path: process.env.PATH };
       for (const [name, srv] of Object.entries(servers)) {
-        if (srv.disabled) {
-          ok(`mcp.json ${name} disabled`);
-          continue;
-        }
-        // The same three tests startup-check applies, so the two never disagree about what is usable (PATH is this shell's;
-        // a proxy.env that changes PATH is not modelled here).
-        const refs = mcpServerEnvRefs(srv);
-        const unset = refs.filter((v) => proxyEnvLookup(envState, v) === "empty");
-        const unknown = refs.filter((v) => proxyEnvLookup(envState, v) === "unknown");
-        const target = srv.command ?? (srv.url ? redactUrl(srv.url) : undefined);
         // A whole-string "$VAR" may be a mis-written reference (the Bridge sends it literally) or a deliberate literal: warn, never disable.
         const bare = mcpBareRefs(srv);
         if (bare.length) warn(`mcp.json ${name} has bare ${bare.map((v) => `$${v}`).join(", ")}; the MCP Bridge sends that literally — if a variable was meant, write ${bare.map((v) => `\${${v}}`).join(", ")}`);
-        if (srv.command === KIMI_CU_PLACEHOLDER) fail(`mcp.json ${name} command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`);
-        else if (srv.command !== undefined && resolveCommand(srv.command) === undefined) fail(`mcp.json ${name} command ${srv.command} ${srv.command.length === 0 ? "is empty" : srv.command.includes("/") ? "is not an executable file" : "is not an executable on PATH"}`);
-        else if (target === undefined) warn(`mcp.json ${name} has neither command nor url`);
-        else if (unset.length) warn(`mcp.json ${name} -> ${target} but proxy.env does not set ${unset.map((v) => `$${v}`).join(", ")} (unavailable until it does)`);
-        else if (unknown.length) warn(`mcp.json ${name} -> ${target}; availability depends on ${unknown.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`);
-        else ok(`mcp.json ${name} -> ${target}${refs.length ? ` (env: ${refs.map((v) => `$${v}`).join(", ")})` : ""}`);
+        // One verdict shared with startup-check (lib/config.ts serverStatus); this block only phrases it. PATH is this
+        // shell's; a proxy.env that changes PATH is not modelled.
+        const st = serverStatus(srv, view);
+        const shown = (target: string) => (srv.command === undefined ? redactUrl(target) : target);
+        if (st.usable) ok(`mcp.json ${name} -> ${shown(st.target)}${st.refs.length ? ` (env: ${st.refs.map((v) => `$${v}`).join(", ")})` : ""}`);
+        else if (st.kind === "disabled") ok(`mcp.json ${name} disabled`);
+        else if (st.kind === "placeholder") fail(`mcp.json ${name} command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`);
+        else if (st.kind === "command-unresolved") fail(`mcp.json ${name} command ${st.command} ${describeUnresolved(st.command)}`);
+        else if (st.kind === "no-target") warn(`mcp.json ${name} has neither command nor url (unavailable)`);
+        else if (st.kind === "env-empty") warn(`mcp.json ${name} -> ${shown(st.target)} but proxy.env does not set ${st.vars.map((v) => `$${v}`).join(", ")} (unavailable until it does)`);
+        else warn(`mcp.json ${name} -> ${shown(st.target)}; availability depends on ${st.vars.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`);
       }
     } catch (e) {
       fail(`mcp.json invalid: ${(e as Error).message}`);

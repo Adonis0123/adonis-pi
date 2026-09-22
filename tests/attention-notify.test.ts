@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakePi, fakeCtx, fakeNotifier } from "./helpers/fake-pi.ts";
-import attentionNotify, { decideSettled, lastAssistantFromBranch } from "../extensions/attention-notify/index.ts";
+import attentionNotify from "../extensions/attention-notify/index.ts";
+import { decideSettled, lastAssistantFromBranch } from "../lib/notify.ts";
 
 const kinds = { confirm: true, fail: true, idle: false };
 const asst = (text: string, stopReason = "stop", errorMessage?: string) => ({
