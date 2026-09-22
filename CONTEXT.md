@@ -40,6 +40,8 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 - **Notifier**：Attention Notify 调用的外部命令，由 Config 指定。发送渠道（飞书或其他）由 Notifier 决定。
 - **Ask Tool**：名为 `AskUserQuestion` 的工具，参数与 Claude Code 同名工具兼容，让写给 Claude Code 的 skill 无需改字就能在 pi 里向用户提问。
 - **Provider**：pi 的模型供应方配置。第一阶段有三个：ChatGPT 订阅（OAuth）、GLM、Kimi。
+- **Session（会话上下文）**：一次 pi 进程里 Extension 共用的东西：生效 Config、Surface、向 Notifier 报事的入口。Extension 只说「发生了什么」，Session 决定要不要告诉 Notifier。
+- **Surface（交互面）**：当前 pi 进程能怎样和人互动的三个判定：能弹对话框、能画自定义面板、能叫 Notifier。由 pi 的运行模式一次性推出，所有 Extension 共用同一张表。
 
 ## 验收
 

@@ -112,8 +112,9 @@ test("doctor reports the notifier variable and a stale packages path", () => {
   pin(home, ["setup", "1"]);
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
-  writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, "/nonexistent/old-checkout"] }, null, 2) + "\n");
+  writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, "/nonexistent/old-checkout"], lastChangelogVersion: "0.87.0" }, null, 2) + "\n");
   const r = pin(home, ["doctor", "1"]);
+  assert.doesNotMatch(r.out, /lastChangelogVersion/, "pi's own bookkeeping key is not drift");
   assert.match(r.out, /^WARN adonis-pi.json references \$ADONIS_PI_NOTIFY_CMD but proxy.env leaves it empty/m);
   assert.match(r.out, /^WARN settings.json packages entry \/nonexistent\/old-checkout does not exist on disk/m);
   assert.equal(r.code, 0);

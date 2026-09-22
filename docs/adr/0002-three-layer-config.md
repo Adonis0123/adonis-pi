@@ -39,3 +39,8 @@
 ## 何时重新评估
 
 Account 超过 3 个，或某个 Account Layer 文件被证明在所有账号里永远相同，可以把该文件改回 symlink。
+
+## 补充（2026-09-22 架构评审）
+
+- 规则 3 的边界：`startup-check` 与 `pin doctor` 只检查 Config 和 `models.json` 引用的 `$VAR` **是否存在**于环境，用来提示「没经 `pin` 启动」，不读取值；这不算 Extension 读密钥。
+- 规则 2 从人工约定变成机械保证：Launcher 的 setup/doctor 由 `bin/lib/account.ts` 实现，它直接 import `lib/config.ts` 的布局、Template 列表与 `$VAR` 语法，sh 侧不再保留副本。

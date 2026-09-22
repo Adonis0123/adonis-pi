@@ -13,9 +13,12 @@ type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
 const readJson = (p: string): Json => JSON.parse(readFileSync(p, "utf8"));
 
-/** Keys the template has that the account lacks, and keys the account has that the template lacks; `$schema` and `packages` are per-account. */
+/**
+ * Keys the template has that the account lacks, and keys the account has that the template lacks.
+ * `$schema` and `packages` are per-account; `lastChangelogVersion` is written by pi itself.
+ */
 export function drift(template: Json, account: Json, prefix = ""): string[] {
-  const skip = new Set(["$schema", "packages"]);
+  const skip = new Set(["$schema", "packages", "lastChangelogVersion"]);
   const out: string[] = [];
   for (const k of Object.keys(template)) {
     if (skip.has(k)) continue;

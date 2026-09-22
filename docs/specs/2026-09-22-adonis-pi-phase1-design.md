@@ -114,13 +114,22 @@ flowchart LR
 - `notify.command` 用 `$VAR` 间接引用，Notifier 的真实路径由 `proxy.env` 或 shell 环境提供，不进仓。
 - `notify.kinds.idle` 只能在 `confirm` 为真时开启：Notifier 从同一个 Stop 事件判定 confirm 还是 idle，关掉 confirm 就没有 Stop 可发。
 
+
+Config 的加载规则（2026-09-22 架构评审后）：
+
+- 账号文件与 Template 逐键合并：对象按键合并，**数组追加**（账号加一条 `denyCommands` 不会丢掉默认 5 条，重复项去掉），标量覆盖。
+- 任意深度的未知键都报错（`unknown key "notify.kinds.confrim"`），拼错不会静默变成默认值。`pin doctor` 用同一个校验器，无效文件报 FAIL。
+- Extension 通过 `lib/session.ts` 取 Config；文件 mtime 或大小变化即重读，改完 `adonis-pi.json` 不用重启 pi。文件损坏时退回 Template，并在有 UI 时提示一次。
+
 ### 3.4 `pin`（Launcher）
 
 ```
 pin <n> [pi 参数...]      启动第 n 号 Account（n=1 → ~/.pi/agent；n≥2 → ~/.pi-00n/agent）
 pin setup <n>             建目录；复制缺失 Template；建 AGENTS.md 链接；在 settings.json 的 packages 注册本仓路径
-pin doctor <n>            检查：proxy.env 权限 600、Template Drift、AGENTS.md 链接有效、packages 含本仓、models.json 里引用的 $VAR 在 proxy.env 中存在、pi --version 属于 0.87.x（否则 WARN）
+pin doctor <n>            检查：proxy.env 权限 600、Template Drift、adonis-pi.json 通过真实校验器、AGENTS.md 链接有效、packages 含本仓且各项在磁盘上存在、models.json 与生效 Config 引用的 $VAR 在 proxy.env 中存在、pi --version 属于 0.87.x（否则 WARN）
 ```
+
+`bin/pin` 是 POSIX sh，只做 sh 才能做的事：source `proxy.env` 进环境、`exec pi`。账号目录布局、Template 列表、`$VAR` 语法、setup 与 doctor 全在 `bin/lib/account.ts`，它直接 import `lib/config.ts`，由 Node ≥ 22.18 以 type stripping 运行（`pin` 启动前检查 Node 版本）。这样 Launcher 与 Extension 不会各存一份布局知识。
 
 启动序列，和 `acc` 的 `_acc_launch` 同构：
 
@@ -143,14 +152,15 @@ sequenceDiagram
 **permission-gate**
 
 - 监听 `tool_call`。对 `bash` 把 `input.command` 切片段后逐条匹配 `denyCommands`；对 `write` / `edit` 检查 `input.path`（相对路径按 `ctx.cwd` 解析，`~` 展开）是否命中 `protectedPaths`。
-- `mode: "ask"`：`ctx.hasUI` 为真时 `ctx.ui.confirm` 询问，否则 `{ block: true, reason }`。`mode: "block"`：一律阻止。
-- 询问前发一条 confirm 提醒，载荷只带命令前 200 字或路径，不带完整 `tool_input`。
-- **定位是防误操作，不是安全隔离**：不拦 `read` 与 `cat ~/.ssh/...` 这类读取，不解析 shell 变量、别名和 `$(…)`，不处理 symlink，也不解析引号（`echo "a | sudo b"` 会多弹一次确认）。需要隔离时用容器或 pi 文档里的沙箱方案。
+- `mode: "ask"`：Surface 的 `canPrompt` 为真时 `ctx.ui.confirm` 询问，否则 `{ block: true, reason }`。`mode: "block"`：一律阻止。
+- 询问前经 Session 报一条 `permission` 事件（由 Session 决定是否叫 Notifier），载荷只带命令前 200 字或路径，不带完整 `tool_input`。
+- 片段切分：换行、`;`、`&&`、`||`、`|`、`&`、`(`、`)`、`$(`，去掉片段开头的 `if/then/else/elif/do/while/until/time/!`，`sh -c '…'` 的引号体递归切分。`rm` 规则接受 `"$HOME"`、`${HOME}`、`'~'` 这类写法。
+- **定位是防误操作，不是安全隔离**：不拦 `read` 与 `cat ~/.ssh/...` 这类读取，不解析 shell 变量、别名和 `eval`，不处理 symlink，也不解析引号（`echo "a | sudo b"` 会多弹一次确认）。需要隔离时用容器或 pi 文档里的沙箱方案。
 - 与 pi 官方 `permission-gate.ts` 的差别：规则来自 Config 而不是硬编码；增加路径保护与片段化匹配。
 
 **attention-notify**
 
-- 分两部分：`lib/notify.ts` 提供 `notify(kind, payload)`，负责组装 Notifier 期望的 JSON 并异步调用；`extensions/attention-notify/` 只处理会话级事件。Permission Gate 与 Ask Tool 在自己进入等待时直接调用 `notify("confirm", …)`，不经事件转发。
+- 三个 Extension 都只向 Session 报「发生了什么」（`question` / `permission` / `settled` / `activity`），`lib/session.ts` 决定要不要叫 Notifier、发什么载荷；`lib/notify.ts` 只剩载荷组装与 spawn 适配器（见 §3.7）。`extensions/attention-notify/` 只把 `tool_result` 与 `agent_settled` 转成事件。
 - 事件到 Notifier JSON 的映射（Notifier 已按 `--agent <name>` 通用处理宿主名，无需改脚本本体）：
 
 | 来源 | Notifier 事件 JSON | Notifier 侧结果 |
@@ -162,16 +172,16 @@ sequenceDiagram
 | 每次 `tool_result` | `PostToolUse` + `--mark` | 只记活动 |
 
 - 只听 `agent_settled`，不听 `agent_end`：后者在自动重试、压缩、续跑前都会触发，会发早。`agent_settled` 没有消息载荷，最后一条 assistant 消息从 `ctx.sessionManager.getBranch()` 取。
-- `ctx.mode !== "tui"` 时不发任何提醒（无人等待）。
+- Surface 的 `canNotify` 为假（非 TUI）时不发任何提醒（无人等待）；`activity` 标记不受 `kinds` 开关影响，只告诉 Notifier agent 还在动。
 - Notifier 子进程只拿到过滤后的环境：去掉 `*_API_KEY`、`*_AUTH_TOKEN`、`ANTHROPIC_*`、`OPENAI_*`。
 - 永不阻塞 agent：spawn 后不等待，超时 10 秒放弃。
 
 **ask-user-question**
 
 - 工具名 `AskUserQuestion`，参数与 Claude Code 同名工具兼容：`questions[]`，每项 `header`、`question`、`options[{label, description}]`、`multiSelect`。这样 `~/.agents/skills` 里写给 Claude Code 的 skill 不改字就能用。
-- `ctx.mode === "tui"` 时用 pi 官方 `question.ts` 式的 `ctx.ui.custom` 面板：多问题顺序弹出；`multiSelect` 用空格切换，空选按 Enter 不返回、面板不关，Esc 才取消；固定追加「Other」自由输入。
-- `ctx.hasUI` 为真但不是 TUI（RPC）：`ctx.ui.custom` 在 RPC 里返回 undefined，改用 `ctx.ui.select` 逐题选择（选项行显示 `label — description`），「Other」走 `ctx.ui.input`；多选降级为单选，`Answer.note` 记录降级，返回文本与 `details` 都带这条说明。
-- `ctx.hasUI` 为假时返回错误文本，让模型用纯文本提问并停下，不替用户选。
+- Surface 的 `canPanel` 为真（TUI）时用 pi 官方 `question.ts` 式的 `ctx.ui.custom` 面板：多问题顺序弹出；`multiSelect` 用空格切换，空选按 Enter 不返回、面板不关，Esc 才取消；固定追加「Other」自由输入。面板的按键→状态→渲染循环在 `createPanel` 里，用假 editor 与 theme 可单测；`done` 只触发一次，之后按键忽略。
+- `canPrompt` 为真但 `canPanel` 为假（RPC）：`ctx.ui.custom` 在 RPC 里返回 undefined，改用 `ctx.ui.select` 逐题选择（选项行显示 `label — description`），「Other」走 `ctx.ui.input`；多选降级为单选，`Answer.note` 记录降级，返回文本与 `details` 都带这条说明。
+- `canPrompt` 为假时返回错误文本，让模型用纯文本提问并停下，不替用户选。
 - 返回内容格式：`Q1 <header>: <answer>` 每题一行，方便 skill 正文里的「按推荐」「选 X」解析。
 
 **startup-check**
@@ -191,6 +201,22 @@ sequenceDiagram
 - Kimi 选 `anthropic-messages` 而不是 `openai-completions`，是为了与 GLM 同一路径，减少 `compat` 字段差异。V6 要求一次工具往返，失败就切 `openai-completions` 并记录。
 - `contextWindow` / `maxTokens`（2026-09-22 查官方文档）：GLM-5.3 上下文 1M、最大输出 128K（docs.bigmodel.cn）；Kimi K3 上下文 1M、`max_completion_tokens` 默认 131072（platform.kimi.ai）。`k3-256k`、`kimi-for-coding` 的上下文按名字推断为 256K，`UNVERIFIED`。
 - `templates/settings.json` 关掉 pi 默认开启的 `enableInstallTelemetry`。
+
+### 3.7 Session 与 Surface（`lib/session.ts`）
+
+每个事件里 Extension 先取 `getSession(ctx)`，得到三样东西：生效 Config、Surface、`notify(happened)`。
+
+Surface 把 pi 的 `ctx.mode` / `ctx.hasUI` 翻译成三个能力，只在这里判定一次：
+
+| pi 模式 | `canPrompt`（confirm/select/input） | `canPanel`（pi-tui 自定义面板） | `canNotify`（叫 Notifier） |
+|---|---|---|---|
+| `tui` | 是 | 是 | 是 |
+| `rpc` | 是 | 否（降级为 select/input） | **否** |
+| `print` / `json` | 否 | 否 | 否 |
+
+RPC 不发提醒的理由：RPC 模式下另一个程序在驾驭 pi 并自己展示对话框，飞书卡片会重复打扰；需要时改这一张表即可，四个 Extension 不用动。
+
+`notify(happened)` 的门控：`question` 与 `permission` 需要 `kinds.confirm`；`settled` 走 `decideSettled`（`aborted` 不发；`error` 只在可归类且 `kinds.fail` 时发 fail；正常结束且 `kinds.confirm` 时发 Stop）；`activity` 不门控。测试通过注入 `loadConfig` 与 `spawn` 两个依赖替身，不再轮询 shell fixture。
 
 ## 4. 验收
 
@@ -229,4 +255,5 @@ sequenceDiagram
 - Kimi 默认模型原定 `k3-1m`，V6 实跑被端点拒绝，改为 `k3`（2026-09-22）。
 - `notify.kinds.idle` 默认关闭，沿用其他宿主。
 - 2026-09-22 第一性原理复查：skills 第一阶段全量接受；`enableInstallTelemetry` 关闭；新增 startup-check extension；doctor 检查 pi 版本。
+- 2026-09-22 代码审查与架构评审（`ocr` + 子代理走查）：修 5 处 Medium（权限门 `&`/`(`/`$(`/关键字绕过、配置嵌套拼错静默、数组整体覆盖、startup-check 漏 notify 变量、RPC 提醒策略不一致）；采纳 4 个 Strong 候选：Session/Surface 模块、Launcher 布局知识收进 `account.ts`、Ask 面板可测试化、RPC 不发提醒。未采纳「配置校验改由 TypeBox schema 生成」，现有手写校验加深度未知键检查已够。
 - 实施计划见 `../plans/2026-09-22-adonis-pi-phase1.md`。
