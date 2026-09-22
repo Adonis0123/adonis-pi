@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { agentDir, envRefs, missingEnvRefs, TEMPLATE_PATH } from "../../lib/config.ts";
+import { agentDir, configEnvRefs, envRefs, missingEnvRefs } from "../../lib/config.ts";
 import { surface } from "../../lib/session.ts";
 
 export { envRefs, missingEnvRefs };
@@ -14,11 +14,8 @@ export function missingByFile(dir: string, env: NodeJS.ProcessEnv): [string, str
     const m = missingEnvRefs(readFileSync(models, "utf8"), env);
     if (m.length) out.push(["models.json", m]);
   }
-  // Extensions read adonis-pi.json through lib/config.ts, which falls back to the template when the file is absent,
-  // so the template's own $VAR references count too.
-  const cfg = join(dir, "adonis-pi.json");
-  const cfgText = existsSync(cfg) ? readFileSync(cfg, "utf8") : readFileSync(TEMPLATE_PATH, "utf8");
-  const c = missingEnvRefs(cfgText, env);
+  // The effective Config = account file merged over the template, so template defaults such as "$ADONIS_PI_NOTIFY_CMD" count too.
+  const c = configEnvRefs(join(dir, "adonis-pi.json")).filter((v) => !env[v]);
   if (c.length) out.push(["adonis-pi.json", c]);
   return out;
 }

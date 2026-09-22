@@ -103,6 +103,20 @@ test("doctor reports nested template drift and missing env refs as WARN", () => 
   assert.match(r.out, /^WARN adonis-pi.json drift: .*extra bogus/m);
   assert.match(r.out, /^WARN adonis-pi.json drift: .*missing permissionGate.denyCommands/m);
   assert.match(r.out, /^WARN models.json references \$GLM_API_KEY but proxy.env leaves it empty/m);
+  assert.match(r.out, /^FAIL adonis-pi.json invalid: .*unknown key "bogus"/m, "doctor runs the same validator as the extensions");
+  assert.equal(r.code, 1);
+});
+
+test("doctor reports the notifier variable and a stale packages path", () => {
+  const home = mkdtempSync(join(tmpdir(), "pin-home-"));
+  pin(home, ["setup", "1"]);
+  const agent = join(home, ".pi", "agent");
+  writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
+  writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, "/nonexistent/old-checkout"] }, null, 2) + "\n");
+  const r = pin(home, ["doctor", "1"]);
+  assert.match(r.out, /^WARN adonis-pi.json references \$ADONIS_PI_NOTIFY_CMD but proxy.env leaves it empty/m);
+  assert.match(r.out, /^WARN settings.json packages entry \/nonexistent\/old-checkout does not exist on disk/m);
+  assert.equal(r.code, 0);
 });
 
 test("doctor fails when settings.json lacks the packages entry (Review Focus 5)", () => {
@@ -135,6 +149,7 @@ test("launch sources proxy.env, exports PI_CODING_AGENT_DIR and execs pi with ar
   assert.match(r.out, new RegExp(`^PI_CODING_AGENT_DIR=${join(home, ".pi", "agent")}$`, "m"));
   assert.match(r.out, /^GLM_API_KEY=<set>$/m);
   assert.match(r.out, /^KIMI_API_KEY=<unset>$/m);
+  assert.match(r.out, /^ADONIS_PI_NOTIFY_CMD=<unset>$/m, "every $VAR the account references is reported");
   assert.doesNotMatch(r.out, /abc/);
   assert.match(r.out, /^ARGS --model glm\/glm-5.3$/m);
 });

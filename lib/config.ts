@@ -71,6 +71,23 @@ export function missingEnvRefs(jsonText: string, env: NodeJS.ProcessEnv): string
   return envRefs(jsonText).filter((v) => !env[v]);
 }
 
+/**
+ * Env vars the *effective* Config references: the account file merged over the template exactly as loadConfig does,
+ * so a template default such as notify.command "$ADONIS_PI_NOTIFY_CMD" counts until the account overrides it.
+ * An unreadable account file counts as absent (loadConfig will fall back to the template too).
+ */
+export function configEnvRefs(path: string): string[] {
+  const template = JSON.parse(readFileSync(TEMPLATE_PATH, "utf8")) as Json;
+  let merged: Json = template;
+  if (existsSync(path)) {
+    try {
+      const account = JSON.parse(readFileSync(path, "utf8"));
+      if (isObject(account)) merged = deepMerge(template, account);
+    } catch {}
+  }
+  return envRefs(JSON.stringify(merged));
+}
+
 const ENV_REF = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/;
 
 export function resolveEnvRef(value: unknown, env: NodeJS.ProcessEnv = process.env): unknown {

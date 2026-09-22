@@ -3,106 +3,32 @@
 #   pin <n> [pi args...]   launch account n   (1 → ~/.pi/agent, n>=2 → ~/.pi-00n/agent)
 #   pin setup <n>          materialise templates into the account (never overwrites)
 #   pin doctor <n>         check the account; exit 1 on FAIL
+# Everything that knows the account layout lives in bin/lib/account.ts; this file only does what sh must:
+# source proxy.env into the environment and exec pi.
 set -eu
 
 PIN_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TEMPLATES="$PIN_ROOT/templates"
-FAMILY=pi
+ACCOUNT="$PIN_ROOT/bin/lib/account.ts"
 
 usage() {
   sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-account_dir() {
-  case "$1" in
-    1) printf '%s/.%s\n' "$HOME" "$FAMILY" ;;
-    *) printf '%s/.%s-%03d\n' "$HOME" "$FAMILY" "$1" ;;
-  esac
+need_node() {
+  command -v node >/dev/null 2>&1 || { echo "pin: node not found; bin/lib/account.ts needs Node >= 22.18" >&2; exit 1; }
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)' \
+    || { echo "pin: Node $(node --version) is too old; >= 22.18 is needed to run bin/lib/account.ts" >&2; exit 1; }
 }
-agent_dir() { printf '%s/agent\n' "$(account_dir "$1")"; }
+account() { node --disable-warning=ExperimentalWarning "$ACCOUNT" "$@"; }
 
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
-expand_tilde() { case "$1" in "~") printf '%s\n' "$HOME" ;; "~/"*) printf '%s/%s\n' "$HOME" "${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
-
-copy_if_absent() { # template-name dest
-  if [ -e "$2" ]; then echo "keep  $2"; else cp "$TEMPLATES/$1" "$2"; echo "write $2"; fi
-}
-
-do_setup() {
-  d=$(agent_dir "$1")
-  mkdir -p "$d"
-  copy_if_absent settings.json "$d/settings.json"
-  copy_if_absent models.json "$d/models.json"
-  copy_if_absent adonis-pi.json "$d/adonis-pi.json"
-  if [ ! -e "$d/proxy.env" ]; then
-    umask 077; cp "$TEMPLATES/proxy.env.example" "$d/proxy.env"; umask 022
-    echo "write $d/proxy.env (fill in your keys)"
-  else
-    echo "keep  $d/proxy.env"
-  fi
-  chmod 600 "$d/proxy.env"
-  echo "packages: $(node "$PIN_ROOT/bin/lib/settings-packages.mjs" "$d/settings.json" "$PIN_ROOT")"
-  agents_md=$(node "$PIN_ROOT/bin/lib/read-field.mjs" "$d/adonis-pi.json" agentsMd)
-  if [ -z "$agents_md" ]; then
-    echo "note  agentsMd is empty in $d/adonis-pi.json — set it to your shared AGENTS.md and rerun setup"
-  else
-    target=$(expand_tilde "$agents_md")
-    if [ -e "$d/AGENTS.md" ] && [ ! -L "$d/AGENTS.md" ]; then
-      echo "note  $d/AGENTS.md is a regular file; not replacing it"
-    elif [ ! -e "$target" ]; then
-      echo "note  agentsMd target $target does not exist; link not created"
-    else
-      ln -sfn "$target" "$d/AGENTS.md"; echo "link  $d/AGENTS.md -> $target"
-    fi
-  fi
-}
-
-do_doctor() {
-  d=$(agent_dir "$1"); fails=0
-  ok()   { echo "OK   $*"; }
-  warn() { echo "WARN $*"; }
-  fail() { echo "FAIL $*"; fails=$((fails + 1)); }
-  [ -d "$d" ] || { fail "account dir $d missing (run: pin setup $1)"; echo; exit 1; }
-  for f in settings.json models.json adonis-pi.json; do
-    if [ -f "$d/$f" ]; then
-      drift=$(node "$PIN_ROOT/bin/lib/drift.mjs" "$d/$f" "$TEMPLATES/$f" 2>/dev/null || echo "unparseable")
-      if [ -z "$drift" ]; then ok "$f matches template keys"; else warn "$f drift: $(printf '%s' "$drift" | tr '\n' ',' | sed 's/,$//')"; fi
-    else
-      fail "$f missing"
-    fi
-  done
-  if [ -f "$d/proxy.env" ]; then
-    m=$(mode_of "$d/proxy.env")
-    [ "$m" = "600" ] && ok "proxy.env mode 600" || fail "proxy.env mode is $m, must be 600"
-    for var in $(grep -o '"\$[A-Z_][A-Z0-9_]*"' "$d/models.json" 2>/dev/null | tr -d '"$' | sort -u); do
-      if grep -Eq "^export $var=.+" "$d/proxy.env"; then ok "models.json \$$var provided"; else warn "models.json references \$$var but proxy.env leaves it empty"; fi
-    done
-  else
-    warn "proxy.env missing (API providers will not authenticate)"
-  fi
-  if [ "$(node "$PIN_ROOT/bin/lib/settings-packages.mjs" "$d/settings.json" "$PIN_ROOT" --check 2>/dev/null)" = "present" ]; then ok "settings.json packages includes $PIN_ROOT"; else fail "settings.json packages lacks $PIN_ROOT (run: pin setup $1)"; fi
-  if [ -L "$d/AGENTS.md" ]; then
-    [ -e "$d/AGENTS.md" ] && ok "AGENTS.md -> $(readlink "$d/AGENTS.md")" || fail "AGENTS.md is a dangling link"
-  elif [ -f "$d/AGENTS.md" ]; then warn "AGENTS.md is a regular file (not shared)"
-  else warn "AGENTS.md not linked (agentsMd empty?)"; fi
-  if command -v pi >/dev/null 2>&1; then
-    ver=$(pi --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    case "$ver" in
-      0.87.*) ok "pi $ver on PATH ($(command -v pi))" ;;
-      "") warn "pi found at $(command -v pi) but its version is unreadable" ;;
-      *) warn "pi $ver differs from the tested 0.87.x; run npm test in the package after upgrading pi" ;;
-    esac
-  else
-    fail "pi not on PATH (npm install -g @earendil-works/pi-coding-agent@0.87.0)"
-  fi
-  [ "$fails" -eq 0 ]
-}
 
 do_launch() {
   n=$1; shift
-  d=$(agent_dir "$n")
+  d=$(account dir "$n")
   [ -d "$d" ] || { echo "pin: $d missing; run: pin setup $n" >&2; exit 1; }
   (
+    # Provider secrets come only from this account's proxy.env, never from the calling shell.
     unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL
     if [ -f "$d/proxy.env" ]; then
       m=$(mode_of "$d/proxy.env")
@@ -112,7 +38,7 @@ do_launch() {
     export PI_CODING_AGENT_DIR="$d"
     if [ "${PIN_DRY_RUN:-0}" = "1" ]; then
       echo "PI_CODING_AGENT_DIR=$d"
-      for v in GLM_API_KEY KIMI_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
+      for v in $(account refs "$d") ANTHROPIC_API_KEY OPENAI_API_KEY; do
         if eval "[ -n \"\${$v:-}\" ]"; then echo "$v=<set>"; else echo "$v=<unset>"; fi
       done
       printf 'ARGS %s\n' "$*"
@@ -125,9 +51,9 @@ do_launch() {
 cmd=${1:-}
 [ $# -gt 0 ] && shift
 case "$cmd" in
-  setup)  do_setup "${1:-1}" ;;
-  doctor) do_doctor "${1:-1}" ;;
+  setup)  need_node; account setup "${1:-1}" "$PIN_ROOT" ;;
+  doctor) need_node; account doctor "${1:-1}" "$PIN_ROOT" ;;
   ""|-h|--help) usage ;;
   *[!0-9]*) usage; exit 2 ;;
-  *) do_launch "$cmd" "$@" ;;
+  *) need_node; do_launch "$cmd" "$@" ;;
 esac
