@@ -8,7 +8,7 @@
 - **注意力提醒**：agent 等你回答、出错、空闲时，调用你自己的通知命令。发到哪里由你的命令决定。
 - **`AskUserQuestion` 工具**：与 Claude Code 同名工具参数兼容，写给 Claude Code 的 skill 不改字就能在 pi 里向你提问。
 - **多账号入口 `pin`**：`pin 1` / `pin 2` 各自独立的登录态与设置，模板复制一次，之后只报告漂移、不覆盖。
-- **Provider 模板**：ChatGPT 订阅走 pi 自带 OAuth；GLM、Kimi 以 `$ENV_VAR` 引用 key，key 只存在 600 权限的 `proxy.env` 里。只有 `pin` 会加载 `proxy.env`；直接运行 `pi` 时启动检查会提示缺哪个变量。
+- **Provider 模板**：ChatGPT 订阅走 pi 自带 OAuth；GLM 在 `models.json` 里以 `$GLM_API_KEY` 引用 key；Kimi 用 pi 内建的 `kimi-coding` provider，只要 `proxy.env` 里有 `KIMI_API_KEY`。key 只存在 600 权限的 `proxy.env` 里，只有 `pin` 会加载它；直接运行 `pi` 时启动检查会提示缺哪个变量。
 - **默认关闭 pi 的安装遥测**：模板 `settings.json` 里 `enableInstallTelemetry: false`。
 
 Skill 不在这里。pi 默认读取 `~/.agents/skills`，本包沿用这一约定。

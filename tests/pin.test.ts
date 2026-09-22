@@ -146,13 +146,13 @@ test("doctor reports the pi version: OK on 0.87.x, WARN on anything else", () =>
 test("launch sources proxy.env, exports PI_CODING_AGENT_DIR and execs pi with args", () => {
   const home = mkdtempSync(join(tmpdir(), "pin-home-"));
   pin(home, ["setup", "1"]);
-  writeFileSync(join(home, ".pi", "agent", "proxy.env"), "export GLM_API_KEY=abc\n");
+  writeFileSync(join(home, ".pi", "agent", "proxy.env"), "export GLM_API_KEY=abc\nexport KIMI_API_KEY=\n");
   chmodSync(join(home, ".pi", "agent", "proxy.env"), 0o600);
   const r = pin(home, ["1", "--model", "glm/glm-5.3"], { PIN_DRY_RUN: "1" });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, new RegExp(`^PI_CODING_AGENT_DIR=${join(home, ".pi", "agent")}$`, "m"));
   assert.match(r.out, /^GLM_API_KEY=<set>$/m);
-  assert.match(r.out, /^KIMI_API_KEY=<unset>$/m);
+  assert.match(r.out, /^KIMI_API_KEY=<unset>$/m, "variables proxy.env exports are reported even when no JSON references them (built-in providers read them)");
   assert.match(r.out, /^ADONIS_PI_NOTIFY_CMD=<unset>$/m, "every $VAR the account references is reported");
   assert.doesNotMatch(r.out, /abc/);
   assert.match(r.out, /^ARGS --model glm\/glm-5.3$/m);

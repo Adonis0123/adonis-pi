@@ -39,7 +39,10 @@ do_launch() {
     export PI_CODING_AGENT_DIR="$d"
     if [ "${PIN_DRY_RUN:-0}" = "1" ]; then
       echo "PI_CODING_AGENT_DIR=$d"
-      for v in $(account refs "$d") ANTHROPIC_API_KEY OPENAI_API_KEY; do
+      # Names only, never values: every $VAR the account's JSON references, every variable proxy.env exports
+      # (built-in pi providers such as kimi-coding read their key from the environment), and the cleared inherited ones.
+      exported=$([ -f "$d/proxy.env" ] && grep -oE '^export [A-Za-z_][A-Za-z0-9_]*' "$d/proxy.env" | cut -d' ' -f2 || true)
+      for v in $(printf '%s\n' $(account refs "$d") $exported ANTHROPIC_API_KEY OPENAI_API_KEY | awk '!seen[$0]++'); do
         if eval "[ -n \"\${$v:-}\" ]"; then echo "$v=<set>"; else echo "$v=<unset>"; fi
       done
       printf 'ARGS %s\n' "$*"

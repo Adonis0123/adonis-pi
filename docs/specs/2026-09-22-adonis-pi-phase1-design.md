@@ -17,7 +17,7 @@
 | P3 | Permission Gate | Extension，监听 `tool_call` | `extensions/permission-gate/` |
 | P4 | Attention Notify | Extension，监听 `tool_result`（记活动）与 `agent_settled`（终态），调用 Notifier | `extensions/attention-notify/` |
 | P5 | Ask Tool | Extension，注册工具 `AskUserQuestion` | `extensions/ask-user-question/` |
-| P6 | Provider | `templates/models.json` 配 GLM 与 Kimi；ChatGPT 订阅走 pi 自带 `/login` | `pin setup` |
+| P6 | Provider | `templates/models.json` 配 GLM；Kimi 用 pi 内建 `kimi-coding`（读 `KIMI_API_KEY`）；ChatGPT 订阅走 pi 自带 `/login` | `pin setup` |
 | P7 | Launcher | `bin/pin`：launch / setup / doctor | `bin/pin` |
 | P8 | Startup Check | Extension，`session_start` 时核对 `models.json` 引用的 `$VAR` 是否在环境里，缺则提示改用 `pin` 启动 | `extensions/startup-check/` |
 
@@ -40,7 +40,7 @@ adonis-pi/
 ├── config.schema.json        # adonis-pi.json 的 JSON Schema
 ├── templates/
 │   ├── settings.json         # packages 指向本仓；defaultProvider/defaultModel 占位
-│   ├── models.json           # GLM、Kimi 两个 provider，apiKey 用 $VAR
+│   ├── models.json           # GLM provider，apiKey 用 $VAR（Kimi 走 pi 内建 kimi-coding）
 │   └── adonis-pi.json        # extension 的默认配置
 ├── lib/
 │   ├── config.ts             # loadConfig()：读 $PI_CODING_AGENT_DIR/adonis-pi.json，校验 schema，解析 $VAR
@@ -205,6 +205,8 @@ sequenceDiagram
 - `contextWindow` / `maxTokens`（2026-09-22 查官方文档）：GLM-5.3 上下文 1M、最大输出 128K（docs.bigmodel.cn）；Kimi K3 上下文 1M、`max_completion_tokens` 默认 131072（platform.kimi.ai）。`k3-256k`、`kimi-for-coding` 的上下文按名字推断为 256K，`UNVERIFIED`。
 - `templates/settings.json` 关掉 pi 默认开启的 `enableInstallTelemetry`。
 
+2026-09-22 起 `models.json` 只保留 GLM：pi 0.87 自带 `kimi-coding` provider，端点、模型表与我们手写的一致且由 pi 维护，手写版删除以免 `/model` 列表重复。`k3-1m` 的 401 教训因此不再相关，见 §7。
+
 ### 3.7 Session 与 Surface（`lib/session.ts`）
 
 每个事件里 Extension 先取 `getSession(ctx)`，得到三样东西：生效 Config、Surface、`notify(happened)`。
@@ -255,7 +257,7 @@ RPC 不发提醒的理由：RPC 模式下另一个程序在驾驭 pi 并自己�
 
 ## 7. 已决（2026-09-22 评审）
 
-- Kimi 默认模型原定 `k3-1m`，V6 实跑被端点拒绝，改为 `k3`（2026-09-22）。
+- Kimi 默认模型原定 `k3-1m`，V6 实跑被端点拒绝，改为 `k3`（2026-09-22）。同日晚些发现 pi 内建 `kimi-coding` provider，其 `k3` 即 1M 上下文；删掉手写的 `kimi` provider，用户默认模型设为 `kimi-coding/k3`。
 - `notify.kinds.idle` 默认关闭，沿用其他宿主。
 - 2026-09-22 第一性原理复查：skills 第一阶段全量接受；`enableInstallTelemetry` 关闭；新增 startup-check extension；doctor 检查 pi 版本。
 - 2026-09-22 代码审查与架构评审（`ocr` + 子代理走查）：修 5 处 Medium（权限门 `&`/`(`/`$(`/关键字绕过、配置嵌套拼错静默、数组整体覆盖、startup-check 漏 notify 变量、RPC 提醒策略不一致）；采纳 4 个 Strong 候选：Session/Surface 模块、Launcher 布局知识收进 `account.ts`、Ask 面板可测试化、RPC 不发提醒。未采纳「配置校验改由 TypeBox schema 生成」，现有手写校验加深度未知键检查已够。
