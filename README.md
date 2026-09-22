@@ -15,7 +15,7 @@ Skill 不在这里。pi 默认读取 `~/.agents/skills`，本包沿用这一约�
 
 ## 状态
 
-第一阶段代码已实现（2026-09-22），自动化测试通过；交互式验收（ChatGPT `/login`、commit skill 弹窗、TUI 内飞书提醒）待完成，记录见 `docs/verification/2026-09-phase1.md`。设计见 `docs/specs/2026-09-22-adonis-pi-phase1-design.md`，术语见 `CONTEXT.md`，决策见 `docs/adr/`。
+第一阶段代码已实现（2026-09-22），自动化测试通过；TUI 内的 `AskUserQuestion` 面板、权限门确认框和飞书提醒已验证，ChatGPT `/login` 与 commit skill 全流程待完成，记录见 `docs/verification/2026-09-phase1.md`。设计见 `docs/specs/2026-09-22-adonis-pi-phase1-design.md`，术语见 `CONTEXT.md`，决策见 `docs/adr/`。
 
 ## 安装（第一阶段完成后）
 
