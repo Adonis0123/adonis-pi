@@ -2061,11 +2061,11 @@ git commit -m "feat(startup-check): warn when models.json env refs are unset"
       ]
     },
     "kimi": {
-      "baseUrl": "https://api.kimi.com/coding/v1",
+      "baseUrl": "https://api.kimi.com/coding",
       "api": "anthropic-messages",
       "apiKey": "$KIMI_API_KEY",
       "models": [
-        { "id": "k3-1m", "name": "Kimi K3 1M", "reasoning": true, "input": ["text"], "contextWindow": 1000000, "maxTokens": 131072 },
+        { "id": "k3", "name": "Kimi K3", "reasoning": true, "input": ["text"], "contextWindow": 1000000, "maxTokens": 131072 },
         { "id": "k3-256k", "name": "Kimi K3 256K", "reasoning": true, "input": ["text"], "contextWindow": 262144, "maxTokens": 131072 },
         { "id": "kimi-for-coding", "name": "Kimi for Coding", "reasoning": true, "input": ["text"], "contextWindow": 262144, "maxTokens": 131072 }
       ]
@@ -2461,7 +2461,7 @@ Run (pi itself was installed in Task 1 Step 3):
 export PATH="<repo>/bin:$PATH"   # <repo> = wherever this repository is cloned; also add to your shell rc
 pin setup 1
 ```
-Expected: `keep ~/.pi/agent/proxy.env` if one already exists, `write` for the three JSON files, `note agentsMd is empty`. Then edit `~/.pi/agent/adonis-pi.json`: set `agentsMd` to your shared rules file; in `~/.pi/agent/proxy.env` set `ADONIS_PI_NOTIFY_CMD` to your notifier executable (machine-specific values live in the operator's private notes, not here); run `pin setup 1` again and confirm `link ~/.pi/agent/AGENTS.md -> …`. Run `pin doctor 1` → no `FAIL`. Launch `pin 1`, run `/login`, choose the ChatGPT/Codex provider, complete OAuth; then `/model` and confirm `glm/glm-5.3` and `kimi/k3-1m` are listed.
+Expected: `keep ~/.pi/agent/proxy.env` if one already exists, `write` for the three JSON files, `note agentsMd is empty`. Then edit `~/.pi/agent/adonis-pi.json`: set `agentsMd` to your shared rules file; in `~/.pi/agent/proxy.env` set `ADONIS_PI_NOTIFY_CMD` to your notifier executable (machine-specific values live in the operator's private notes, not here); run `pin setup 1` again and confirm `link ~/.pi/agent/AGENTS.md -> …`. Run `pin doctor 1` → no `FAIL`. Launch `pin 1`, run `/login`, choose the ChatGPT/Codex provider, complete OAuth; then `/model` and confirm `glm/glm-5.3` and `kimi/k3` are listed.
 
 - [ ] **Step 8: Manual TUI check of AskUserQuestion (moved here from Task 5 because it needs the login above)**
 
@@ -2551,8 +2551,8 @@ Expected: Feishu confirm card arrives within ~10 s, labelled `pi`, quoting the q
 
 - [ ] **Step 7: V6 — GLM and Kimi**
 
-In pi: `/model` → `glm/glm-5.3`, ask `读 package.json，告诉我 test 脚本是什么`; then `/model` → `kimi/k3-1m`, same question. Both must actually call the `read` tool (a tool round trip), not answer from memory.
-Expected: both call `read` and answer correctly; no `apiKey` error. If `k3-1m` fails on tool use with `anthropic-messages`, change `"api"` to `"openai-completions"` in **both** `~/.pi/agent/models.json` (the account file pi actually reads; it reloads when you open `/model`) and `templates/models.json`, retry, and record which one worked.
+In pi: `/model` → `glm/glm-5.3`, ask `读 package.json，告诉我 test 脚本是什么`; then `/model` → `kimi/k3`, same question. Both must actually call the `read` tool (a tool round trip), not answer from memory.
+Expected: both call `read` and answer correctly; no `apiKey` error. Executed 2026-09-22 in print mode: Kimi first returned 404 (baseUrl must not end in `/v1`; pi appends `/v1/messages`), then 401 for `k3-1m` (`Please set model id as k3`); `k3` passed. If `k3` fails on tool use with `anthropic-messages`, change `"api"` to `"openai-completions"` in **both** `~/.pi/agent/models.json` (the account file pi actually reads; it reloads when you open `/model`) and `templates/models.json`, retry, and record which one worked.
 
 - [ ] **Step 8: V7 — doctor**
 

@@ -185,9 +185,9 @@ sequenceDiagram
 |---|---|---|---|---|
 | `openai-codex` | pi 内置 | 内置 | 由 `/login` 决定 | OAuth，`auth.json` |
 | `glm` | `anthropic-messages` | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3` | `$GLM_API_KEY` |
-| `kimi` | `anthropic-messages` | `https://api.kimi.com/coding/v1` | `k3-1m`（默认）、`k3-256k`、`kimi-for-coding` | `$KIMI_API_KEY` |
+| `kimi` | `anthropic-messages` | `https://api.kimi.com/coding`（pi 会追加 `/v1/messages`，带 `/v1` 会 404） | `k3`（默认）、`k3-256k`、`kimi-for-coding` | `$KIMI_API_KEY` |
 
-- 两家的模型列表已用真实 key 核对（2026-09-22）：GLM 列表最高为 `glm-5.3`；Kimi coding 端点的列表返回 `kimi-for-coding`、`kimi-for-coding-highspeed`、`k3`、`k3-256k`，但直接请求 `k3-1m` 也成功。用户选 `k3-1m` 为默认。两种 API 风格都通。
+- 两家的模型列表已用真实 key 核对（2026-09-22）：GLM 列表最高为 `glm-5.3`；Kimi coding 端点的列表返回 `kimi-for-coding`、`kimi-for-coding-highspeed`、`k3`、`k3-256k`，裸 curl 请求 `k3-1m` 也成功。但 V6 实跑（2026-09-22）显示该端点按客户端识别：pi 发出的请求被判为 `other`，`k3-1m` 返回 401 `Please set model id as k3`，只有 `k3` 可用。用户原选 `k3-1m`，因端点限制改为 `k3`。两种 API 风格都通。
 - Kimi 选 `anthropic-messages` 而不是 `openai-completions`，是为了与 GLM 同一路径，减少 `compat` 字段差异。V6 要求一次工具往返，失败就切 `openai-completions` 并记录。
 - `contextWindow` / `maxTokens`（2026-09-22 查官方文档）：GLM-5.3 上下文 1M、最大输出 128K（docs.bigmodel.cn）；Kimi K3 上下文 1M、`max_completion_tokens` 默认 131072（platform.kimi.ai）。`k3-256k`、`kimi-for-coding` 的上下文按名字推断为 256K，`UNVERIFIED`。
 - `templates/settings.json` 关掉 pi 默认开启的 `enableInstallTelemetry`。
@@ -226,7 +226,7 @@ sequenceDiagram
 
 ## 7. 已决（2026-09-22 评审）
 
-- Kimi 默认模型 `k3-1m`。
+- Kimi 默认模型原定 `k3-1m`，V6 实跑被端点拒绝，改为 `k3`（2026-09-22）。
 - `notify.kinds.idle` 默认关闭，沿用其他宿主。
 - 2026-09-22 第一性原理复查：skills 第一阶段全量接受；`enableInstallTelemetry` 关闭；新增 startup-check extension；doctor 检查 pi 版本。
 - 实施计划见 `../plans/2026-09-22-adonis-pi-phase1.md`。
