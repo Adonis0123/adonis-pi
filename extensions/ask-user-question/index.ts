@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getSession, type SessionDeps } from "../../lib/session.ts";
 import { OTHER_LABEL, type Answer, type QuestionInput } from "./state.ts";
-import { askOne, askOneRpc } from "./ui.ts";
+import { askOne, askOneRpc, type AskCtx } from "./ui.ts";
 
 const OptionSchema = Type.Object({
   label: Type.String({ description: "Display label for the option" }),
@@ -57,7 +57,7 @@ export default function askUserQuestion(pi: ExtensionAPI, deps: SessionDeps = {}
       session.notify({ kind: "question", questions });
       const answers: (Answer | null)[] = [];
       for (let i = 0; i < questions.length; i++) {
-        const a = await ask(ctx as any, questions[i], i, questions.length);
+        const a = await ask(ctx as unknown as AskCtx, questions[i], i, questions.length);
         answers.push(a);
         if (a === null) {
           while (answers.length < questions.length) answers.push(null);
