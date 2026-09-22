@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Account-layer and secret-layer files never live in this repo.
+# They are materialised into $PI_CODING_AGENT_DIR by `pin setup`.
+*.env
+*.env.*
+!templates/proxy.env.example
+auth.json
+settings.json
+models.json
+adonis-pi.json
+!templates/settings.json
+!templates/models.json
+!templates/adonis-pi.json
