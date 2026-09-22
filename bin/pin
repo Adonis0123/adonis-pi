@@ -1,8 +1,9 @@
 #!/bin/sh
 # pin — launcher and account maintainer for pi (see docs/specs/2026-09-22-adonis-pi-phase1-design.md §3.4).
-#   pin <n> [pi args...]   launch account n   (1 → ~/.pi/agent, n>=2 → ~/.pi-00n/agent)
+#   pin [n] [pi args...]   launch account n (default 1; 1 → ~/.pi/agent, n>=2 → ~/.pi-00n/agent)
 #   pin setup <n>          materialise templates into the account (never overwrites)
 #   pin doctor <n>         check the account; exit 1 on FAIL
+#   pin -h                 this help
 # Everything that knows the account layout lives in bin/lib/account.ts; this file only does what sh must:
 # source proxy.env into the environment and exec pi.
 set -eu
@@ -11,7 +12,7 @@ PIN_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ACCOUNT="$PIN_ROOT/bin/lib/account.ts"
 
 usage() {
-  sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 need_node() {
@@ -49,11 +50,10 @@ do_launch() {
 }
 
 cmd=${1:-}
-[ $# -gt 0 ] && shift
 case "$cmd" in
-  setup)  need_node; account setup "${1:-1}" "$PIN_ROOT" ;;
-  doctor) need_node; account doctor "${1:-1}" "$PIN_ROOT" ;;
-  ""|-h|--help) usage ;;
-  *[!0-9]*) usage; exit 2 ;;
-  *) need_node; do_launch "$cmd" "$@" ;;
+  setup)  shift; need_node; account setup "${1:-1}" "$PIN_ROOT" ;;
+  doctor) shift; need_node; account doctor "${1:-1}" "$PIN_ROOT" ;;
+  -h|--help) usage ;;
+  ""|*[!0-9]*) need_node; do_launch 1 "$@" ;;   # no number: account 1 with everything passed to pi
+  *) shift; need_node; do_launch "$cmd" "$@" ;;
 esac

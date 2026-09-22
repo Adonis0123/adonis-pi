@@ -120,11 +120,13 @@ Config 的加载规则（2026-09-22 架构评审后）：
 - 账号文件与 Template 逐键合并：对象按键合并，**数组追加**（账号加一条 `denyCommands` 不会丢掉默认 5 条，重复项去掉），标量覆盖。
 - 任意深度的未知键都报错（`unknown key "notify.kinds.confrim"`），拼错不会静默变成默认值。`pin doctor` 用同一个校验器，无效文件报 FAIL。
 - Extension 通过 `lib/session.ts` 取 Config；文件 mtime 或大小变化即重读，改完 `adonis-pi.json` 不用重启 pi。文件损坏时退回 Template，并在有 UI 时提示一次。
+- 因为是合并，账号层的 `adonis-pi.json` 只保存覆盖项：`pin setup` 生成 `{ "$schema", "agentsMd": "" }`，不复制整份 Template（否则数组追加会让旧规则永远留在账号里）。`pin doctor` 对它做校验而不做 Drift。
+- Drift 只报「Template 有、账号没有」的键；账号多出来的键（`theme`、`skills`、pi 自己写的 `lastChangelogVersion`）是正常的，不报。
 
 ### 3.4 `pin`（Launcher）
 
 ```
-pin <n> [pi 参数...]      启动第 n 号 Account（n=1 → ~/.pi/agent；n≥2 → ~/.pi-00n/agent）
+pin [n] [pi 参数...]      启动第 n 号 Account（不写 n 就是 1；n=1 → ~/.pi/agent；n≥2 → ~/.pi-00n/agent），所以 `alias pi=pin` 后 `pi -p "…"` 照常可用
 pin setup <n>             建目录；复制缺失 Template；建 AGENTS.md 链接；在 settings.json 的 packages 注册本仓路径
 pin doctor <n>            检查：proxy.env 权限 600、Template Drift、adonis-pi.json 通过真实校验器、AGENTS.md 链接有效、packages 含本仓且各项在磁盘上存在、models.json 与生效 Config 引用的 $VAR 在 proxy.env 中存在、pi --version 属于 0.87.x（否则 WARN）
 ```
@@ -154,6 +156,7 @@ sequenceDiagram
 - 监听 `tool_call`。对 `bash` 把 `input.command` 切片段后逐条匹配 `denyCommands`；对 `write` / `edit` 检查 `input.path`（相对路径按 `ctx.cwd` 解析，`~` 展开）是否命中 `protectedPaths`。
 - `mode: "ask"`：Surface 的 `canPrompt` 为真时 `ctx.ui.confirm` 询问，否则 `{ block: true, reason }`。`mode: "block"`：一律阻止。
 - 询问前经 Session 报一条 `permission` 事件（由 Session 决定是否叫 Notifier），载荷只带命令前 200 字或路径，不带完整 `tool_input`。
+- `git push` 规则对带 `--dry-run` 的命令放行（2026-09-22 用户要求放宽）。
 - 片段切分：换行、`;`、`&&`、`||`、`|`、`&`、`(`、`)`、`$(`，去掉片段开头的 `if/then/else/elif/do/while/until/time/!`，`sh -c '…'` 的引号体递归切分。`rm` 规则接受 `"$HOME"`、`${HOME}`、`'~'` 这类写法。
 - **定位是防误操作，不是安全隔离**：不拦 `read` 与 `cat ~/.ssh/...` 这类读取，不解析 shell 变量、别名和 `eval`，不处理 symlink，也不解析引号（`echo "a | sudo b"` 会多弹一次确认）。需要隔离时用容器或 pi 文档里的沙箱方案。
 - 与 pi 官方 `permission-gate.ts` 的差别：规则来自 Config 而不是硬编码；增加路径保护与片段化匹配。

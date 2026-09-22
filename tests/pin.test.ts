@@ -30,6 +30,8 @@ test("setup 1 materialises templates into ~/.pi/agent and registers the package"
   assert.deepEqual(JSON.parse(readFileSync(join(agent, "settings.json"), "utf8")).packages, [ROOT]);
   assert.equal(lstatSync(join(agent, "proxy.env")).mode & 0o777, 0o600);
   assert.match(r.out, /agentsMd is empty/);
+  const cfg = JSON.parse(readFileSync(join(agent, "adonis-pi.json"), "utf8"));
+  assert.deepEqual(Object.keys(cfg).sort(), ["$schema", "agentsMd"], "the account config holds overrides only, so template defaults keep flowing");
 });
 
 test("setup 2 uses ~/.pi-002/agent", () => {
@@ -94,14 +96,16 @@ test("doctor passes on a fresh setup and fails on a 644 proxy.env", () => {
   assert.match(r.out, /^FAIL proxy.env mode/m);
 });
 
-test("doctor reports nested template drift and missing env refs as WARN", () => {
+test("doctor reports template drift as missing keys only, validates adonis-pi.json, and warns on empty env refs", () => {
   const home = mkdtempSync(join(tmpdir(), "pin-home-"));
   pin(home, ["setup", "1"]);
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "", bogus: 1, permissionGate: { mode: "ask" } }));
+  writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT], theme: "light", skills: ["!x"] }, null, 2) + "\n");
   const r = pin(home, ["doctor", "1"]);
-  assert.match(r.out, /^WARN adonis-pi.json drift: .*extra bogus/m);
-  assert.match(r.out, /^WARN adonis-pi.json drift: .*missing permissionGate.denyCommands/m);
+  assert.match(r.out, /^WARN settings.json drift: missing defaultProvider,missing quietStartup,missing enableInstallTelemetry$/m);
+  assert.doesNotMatch(r.out, /extra/, "user and pi keys in settings.json are not drift");
+  assert.doesNotMatch(r.out, /adonis-pi.json drift/, "adonis-pi.json is merged at runtime, so missing keys are not drift");
   assert.match(r.out, /^WARN models.json references \$GLM_API_KEY but proxy.env leaves it empty/m);
   assert.match(r.out, /^FAIL adonis-pi.json invalid: .*unknown key "bogus"/m, "doctor runs the same validator as the extensions");
   assert.equal(r.code, 1);
@@ -114,7 +118,6 @@ test("doctor reports the notifier variable and a stale packages path", () => {
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, "/nonexistent/old-checkout"], lastChangelogVersion: "0.87.0" }, null, 2) + "\n");
   const r = pin(home, ["doctor", "1"]);
-  assert.doesNotMatch(r.out, /lastChangelogVersion/, "pi's own bookkeeping key is not drift");
   assert.match(r.out, /^WARN adonis-pi.json references \$ADONIS_PI_NOTIFY_CMD but proxy.env leaves it empty/m);
   assert.match(r.out, /^WARN settings.json packages entry \/nonexistent\/old-checkout does not exist on disk/m);
   assert.equal(r.code, 0);
@@ -153,6 +156,17 @@ test("launch sources proxy.env, exports PI_CODING_AGENT_DIR and execs pi with ar
   assert.match(r.out, /^ADONIS_PI_NOTIFY_CMD=<unset>$/m, "every $VAR the account references is reported");
   assert.doesNotMatch(r.out, /abc/);
   assert.match(r.out, /^ARGS --model glm\/glm-5.3$/m);
+});
+
+test("pin with pi arguments but no account number launches account 1", () => {
+  const home = mkdtempSync(join(tmpdir(), "pin-home-"));
+  pin(home, ["setup", "1"]);
+  const r = pin(home, ["--model", "kimi/k3", "-p", "hi"], { PIN_DRY_RUN: "1" });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, new RegExp(`^PI_CODING_AGENT_DIR=${join(home, ".pi", "agent")}$`, "m"));
+  assert.match(r.out, /^ARGS --model kimi\/k3 -p hi$/m);
+  const bare = pin(home, [], { PIN_DRY_RUN: "1" });
+  assert.match(bare.out, /^ARGS $/m);
 });
 
 test("launch refuses a world-readable proxy.env", () => {

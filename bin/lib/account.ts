@@ -14,23 +14,22 @@ const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && 
 const readJson = (p: string): Json => JSON.parse(readFileSync(p, "utf8"));
 
 /**
- * Keys the template has that the account lacks, and keys the account has that the template lacks.
- * `$schema` and `packages` are per-account; `lastChangelogVersion` is written by pi itself.
+ * Template keys the account file lacks (a template update the account has not adopted). Extra account keys are not
+ * drift: pi and the user legitimately add their own (theme, defaultModel, skills, lastChangelogVersion…).
  */
 export function drift(template: Json, account: Json, prefix = ""): string[] {
-  const skip = new Set(["$schema", "packages", "lastChangelogVersion"]);
   const out: string[] = [];
   for (const k of Object.keys(template)) {
-    if (skip.has(k)) continue;
+    if (k === "$schema" || k === "packages") continue;
     const path = prefix ? `${prefix}.${k}` : k;
     if (!(k in account)) out.push(`missing ${path}`);
     else if (isObj(template[k]) && isObj(account[k])) out.push(...drift(template[k], account[k], path));
   }
-  for (const k of Object.keys(account)) {
-    if (!skip.has(k) && !(k in template)) out.push(`extra ${prefix ? `${prefix}.${k}` : k}`);
-  }
   return out;
 }
+
+/** Files setup copies verbatim. adonis-pi.json is different: it is merged over the template at runtime, so the account keeps only overrides. */
+const COPIED_FILES = TEMPLATED_FILES.filter((f) => f !== "adonis-pi.json");
 
 function packagesOf(settingsPath: string): string[] {
   const j = readJson(settingsPath);
@@ -75,13 +74,20 @@ export function accountRefs(dir: string): string[] {
 function setup(n: number, pinRoot: string): void {
   const d = accountAgentDir(n);
   mkdirSync(d, { recursive: true });
-  for (const f of TEMPLATED_FILES) {
+  for (const f of COPIED_FILES) {
     const dest = join(d, f);
     if (existsSync(dest)) console.log(`keep  ${dest}`);
     else {
       copyFileSync(join(TEMPLATES_DIR, f), dest);
       console.log(`write ${dest}`);
     }
+  }
+  const cfgDest = join(d, "adonis-pi.json");
+  if (existsSync(cfgDest)) console.log(`keep  ${cfgDest}`);
+  else {
+    const schema = readJson(join(TEMPLATES_DIR, "adonis-pi.json")).$schema;
+    writeFileSync(cfgDest, JSON.stringify({ $schema: schema, agentsMd: "" }, null, 2) + "\n");
+    console.log(`write ${cfgDest} (overrides only; defaults come from the package template)`);
   }
   const proxy = join(d, "proxy.env");
   if (existsSync(proxy)) console.log(`keep  ${proxy}`);
@@ -138,6 +144,7 @@ function doctor(n: number, pinRoot: string): number {
       fail(`${f} missing`);
       continue;
     }
+    if (f === "adonis-pi.json") continue; // merged at runtime; validated below instead of diffed
     let dr: string[];
     try {
       dr = drift(readJson(join(TEMPLATES_DIR, f)), readJson(p));

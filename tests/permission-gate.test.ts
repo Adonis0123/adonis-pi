@@ -74,7 +74,7 @@ test("quoted text containing a separator is a known false positive in ask mode (
 });
 
 test("ordinary commands and other tools pass", () => {
-  const passes = ["git push origin feature", "rm -rf node_modules", "rm -rf ./build/", "rm -rf /tmp/x", "rm -rf ~/x", "rm -rf ${HOME}/x", "echo sudo", "grep sudo README.md", "chmod 755 bin/pin", "if true; then echo ok; fi", "echo $(date)"];
+  const passes = ["git push origin feature", "git push --force --dry-run origin HEAD", "git push -f --dry-run", "rm -rf node_modules", "rm -rf ./build/", "rm -rf /tmp/x", "rm -rf ~/x", "rm -rf ${HOME}/x", "echo sudo", "grep sudo README.md", "chmod 755 bin/pin", "if true; then echo ok; fi", "echo $(date)"];
   for (const command of passes) {
     assert.equal(matchToolCall({ toolName: "bash", input: { command } }, gate(), "/p"), undefined, `unexpected hit for: ${command}`);
   }

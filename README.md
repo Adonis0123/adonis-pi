@@ -32,6 +32,21 @@ pin 1
 
 `pin setup` 会在 `~/.pi/agent/` 生成 `settings.json`、`models.json`、`adonis-pi.json`，并提示你填写 `agentsMd` 与 `proxy.env`。不需要 `npm install`：pi 加载的是 TypeScript 源文件，`settings.json` 的 `packages` 指向这个 checkout。
 
+## 日常使用
+
+| 想做什么 | 怎么做 |
+|---|---|
+| 启动 | `pin`（等于 `pin 1`）；任何 pi 参数直接跟在后面，如 `pin -p "总结这个仓库"` |
+| 换模型（本次会话） | TUI 里 `/model` 选择；或启动时 `pin --model kimi/k3`、`pin --model glm/glm-5.3` |
+| 换默认模型 | `/model` 里选中后按 `Ctrl+S` 保存；或改 `~/.pi/agent/settings.json` 的 `defaultProvider` / `defaultModel` |
+| ChatGPT 订阅 | TUI 里 `/login` 选 `openai-codex`，浏览器授权一次，登录态存在该账号的 `auth.json` |
+| 体检 | `pin doctor 1`：权限、Drift、`$VAR`、`packages`、pi 版本 |
+| 第二个账号 | `pin setup 2 && pin 2`：独立的 `~/.pi-002/agent`，有自己的 `auth.json`、`proxy.env`、`settings.json`、会话 |
+
+什么时候需要第二个账号：另一个 ChatGPT 订阅身份、想让某个账号只用 API key 且默认模型不同、或想把某个项目/客户的会话历史与设置完全隔开。只切换 GLM / Kimi 不需要第二个账号，`/model` 就够。
+
+账号目录里的 `adonis-pi.json` 只写你要覆盖的键（`pin setup` 生成的就是这样），其余默认值随包更新；`denyCommands` 这类数组是追加，不是替换。
+
 ## 更新
 
 ```sh
