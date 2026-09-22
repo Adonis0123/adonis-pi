@@ -4,9 +4,15 @@
   "description": "Pi Package: permission gate, attention notify, AskUserQuestion tool and multi-account launcher for pi",
   "license": "MIT",
   "type": "module",
-  "keywords": ["pi-package"],
-  "engines": { "node": ">=22.19.0" },
-  "bin": { "pin": "./bin/pin" },
+  "keywords": [
+    "pi-package"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "pin": "./bin/pin"
+  },
   "pi": {
     "extensions": [
       "./extensions/permission-gate/index.ts",
@@ -17,7 +23,8 @@
   },
   "scripts": {
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "leak-check": "sh scripts/leak-check.sh"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.0",
