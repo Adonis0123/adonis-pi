@@ -1,0 +1,35 @@
+{
+  "name": "adonis-pi",
+  "version": "0.1.0",
+  "description": "Pi Package: permission gate, attention notify, AskUserQuestion tool and multi-account launcher for pi",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "engines": { "node": ">=22.19.0" },
+  "bin": { "pin": "./bin/pin" },
+  "pi": {
+    "extensions": [
+      "./extensions/permission-gate/index.ts",
+      "./extensions/attention-notify/index.ts",
+      "./extensions/ask-user-question/index.ts",
+      "./extensions/startup-check/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-tui": "^0.87.0",
+    "typebox": "^1.3.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typebox": "^1.3.0",
+    "typescript": "^5.6.0"
+  }
+}
