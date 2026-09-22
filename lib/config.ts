@@ -38,6 +38,39 @@ export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
   return v ? expandTilde(v) : join(homedir(), ".pi", "agent");
 }
 
+/** Account Layer layout (CONTEXT.md "Family"): account 1 is ~/.pi, account n>=2 is ~/.pi-00n; pi reads the agent/ subdir. */
+export function accountAgentDir(n: number, home: string = homedir()): string {
+  const family = n === 1 ? ".pi" : `.pi-${String(n).padStart(3, "0")}`;
+  return join(home, family, "agent");
+}
+
+/** Account Layer files that have a Template in this repo (ADR 0002 rule 2). */
+export const TEMPLATED_FILES = ["settings.json", "models.json", "adonis-pi.json"] as const;
+
+/** Environment variables a JSON document references as whole-string "$VAR" / "${VAR}" values (keys such as "$schema" do not count), sorted, deduplicated. */
+export function envRefs(jsonText: string): string[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+  const found = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") {
+      const m = ENV_REF.exec(v);
+      if (m) found.add(m[1]);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (isObject(v)) Object.values(v).forEach(walk);
+  };
+  walk(doc);
+  return [...found].sort();
+}
+
+export function missingEnvRefs(jsonText: string, env: NodeJS.ProcessEnv): string[] {
+  return envRefs(jsonText).filter((v) => !env[v]);
+}
+
 const ENV_REF = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/;
 
 export function resolveEnvRef(value: unknown, env: NodeJS.ProcessEnv = process.env): unknown {
@@ -47,7 +80,8 @@ export function resolveEnvRef(value: unknown, env: NodeJS.ProcessEnv = process.e
   return env[m[1]];
 }
 
-const TEMPLATE_PATH = fileURLToPath(new URL("../templates/adonis-pi.json", import.meta.url));
+export const TEMPLATE_PATH = fileURLToPath(new URL("../templates/adonis-pi.json", import.meta.url));
+export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 
 export function loadTemplate(): AdonisPiConfig {
   const raw = JSON.parse(readFileSync(TEMPLATE_PATH, "utf8"));
@@ -61,12 +95,24 @@ function isObject(v: unknown): v is Json {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Objects merge key by key; arrays extend the template (account entries are appended, duplicates dropped); scalars replace. */
 function deepMerge(base: Json, over: Json): Json {
   const out: Json = { ...base };
   for (const [k, v] of Object.entries(over)) {
-    out[k] = isObject(v) && isObject(base[k]) ? deepMerge(base[k] as Json, v) : v;
+    if (isObject(v) && isObject(base[k])) out[k] = deepMerge(base[k] as Json, v);
+    else if (Array.isArray(v) && Array.isArray(base[k])) out[k] = [...(base[k] as unknown[]), ...v.filter((x) => !(base[k] as unknown[]).includes(x))];
+    else out[k] = v;
   }
   return out;
+}
+
+/** Every key at every depth must exist in the template, so a typo never silently falls back to a default. */
+function rejectUnknownKeys(template: Json, raw: Json, prefix = ""): void {
+  for (const k of Object.keys(raw)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (!(k in template)) throw new ConfigError(`unknown key "${path}"`);
+    if (isObject(template[k]) && isObject(raw[k])) rejectUnknownKeys(template[k] as Json, raw[k] as Json, path);
+  }
 }
 
 function expectType(path: string, value: unknown, type: "string" | "boolean" | "number" | "string[]"): void {
@@ -77,11 +123,8 @@ function expectType(path: string, value: unknown, type: "string" | "boolean" | "
   if (!ok) throw new ConfigError(`${path} must be ${type}`);
 }
 
-function validate(raw: Json): asserts raw is Json & AdonisPiConfig {
-  const known = ["agentsMd", "permissionGate", "notify", "askUserQuestion"];
-  for (const k of Object.keys(raw)) {
-    if (!known.includes(k)) throw new ConfigError(`unknown key "${k}"`);
-  }
+function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConfig {
+  rejectUnknownKeys(template, raw);
   expectType("agentsMd", raw.agentsMd, "string");
   const pg = raw.permissionGate as Json;
   if (!isObject(pg)) throw new ConfigError("permissionGate must be an object");
@@ -124,7 +167,7 @@ export function loadConfig(opts: { path?: string; env?: NodeJS.ProcessEnv } = {}
     delete account.$schema;
     merged = deepMerge(template, account);
   }
-  validate(merged);
+  validate(merged, template);
   const cfg = merged as AdonisPiConfig;
   const command = resolveEnvRef(cfg.notify.command, env);
   cfg.notify.command = typeof command === "string" && command.length > 0 ? expandTilde(command) : undefined;

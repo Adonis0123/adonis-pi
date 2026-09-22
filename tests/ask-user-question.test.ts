@@ -1,11 +1,8 @@
-import { test, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createFakePi, fakeCtx } from "./helpers/fake-pi.ts";
+import { createFakePi, fakeCtx, fakeNotifier } from "./helpers/fake-pi.ts";
 import { initialState, reduce, OTHER_LABEL, type QuestionInput } from "../extensions/ask-user-question/state.ts";
 import askUserQuestion, { formatAnswers } from "../extensions/ask-user-question/index.ts";
-import { resetRuntimeConfigForTests } from "../lib/runtime-config.ts";
-
-beforeEach(() => resetRuntimeConfigForTests());
 
 const single: QuestionInput = { header: "Approach", question: "Which?", options: [{ label: "A" }, { label: "B", description: "slower" }] };
 const multi: QuestionInput = { ...single, multiSelect: true };
@@ -127,4 +124,19 @@ test("a cancelled question stops the sequence and reports it", async () => {
   const ctx = fakeCtx({ ui: { ...fakeCtx().ui, custom: async () => null } });
   const r = await tools.get("AskUserQuestion")!.execute("t1", { questions: [single, multi] }, undefined, undefined, ctx);
   assert.match(r.content[0].text!, /cancelled/i);
+});
+
+test("asking notifies once per tool call in the TUI with the question texts, and not in rpc", async () => {
+  const n = fakeNotifier();
+  const { pi, tools } = createFakePi();
+  askUserQuestion(pi, n.deps);
+  const ctx = fakeCtx({ ui: { ...fakeCtx().ui, custom: async () => ({ selected: ["A"] }) } });
+  await tools.get("AskUserQuestion")!.execute("t1", { questions: [single, multi] }, undefined, undefined, ctx);
+  assert.equal(n.sent.length, 1);
+  assert.equal(n.sent[0].payload.hook_event_name, "PreToolUse");
+  assert.equal(n.sent[0].payload.tool_name, "AskUserQuestion");
+  assert.deepEqual((n.sent[0].payload.tool_input as any).questions, [{ question: "Which?", header: "Approach" }, { question: "Which?", header: "Approach" }]);
+  const rpc = fakeCtx({ mode: "rpc", hasUI: true, ui: { ...fakeCtx().ui, select: async () => "A" } });
+  await tools.get("AskUserQuestion")!.execute("t2", { questions: [single] }, undefined, undefined, rpc);
+  assert.equal(n.sent.length, 1);
 });

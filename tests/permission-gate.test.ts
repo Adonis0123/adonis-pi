@@ -1,19 +1,16 @@
-import { test, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createFakePi, fakeCtx } from "./helpers/fake-pi.ts";
 import { globToRegExp, matchToolCall, segments } from "../extensions/permission-gate/match.ts";
 import { loadTemplate } from "../lib/config.ts";
-import { resetRuntimeConfigForTests } from "../lib/runtime-config.ts";
 import permissionGate from "../extensions/permission-gate/index.ts";
+import { fakeNotifier } from "./helpers/fake-pi.ts";
 
-const CAPTURE = fileURLToPath(new URL("./fixtures/capture-notify.sh", import.meta.url));
 const gate = () => loadTemplate().permissionGate;
-
-beforeEach(() => resetRuntimeConfigForTests());
 
 test("globToRegExp expands ~ and handles ** and *", () => {
   const re = globToRegExp("~/.ssh/**");
@@ -28,6 +25,8 @@ test("segments splits on newlines, separators and shell -c wrappers", () => {
   assert.deepEqual(segments("a; b && c || d | e\nf"), ["a", " b ", " c ", " d ", " e", "f"]);
   assert.deepEqual(segments("bash -c 'sudo rm x'"), ["bash -c 'sudo rm x'", "sudo rm x"]);
   assert.deepEqual(segments('sh -c "ls | sudo tee f"'), ['sh -c "ls | sudo tee f"', "ls ", " sudo tee f"]);
+  assert.deepEqual(segments("if a; then b; fi"), ["a", " b", " fi"]);
+  assert.deepEqual(segments("x=$(a) & (b)"), ["x=", "a", "b"]);
 });
 
 test("deny regexes hit in every segment shape (Review Focus 1)", () => {
@@ -51,6 +50,16 @@ test("deny regexes hit in every segment shape (Review Focus 1)", () => {
     "chmod -R 777 .",
     "chmod 0777 f",
     "dd if=/dev/zero of=/dev/disk2",
+    // chained with a single &, keyword-prefixed, subshell, command substitution, quoted/braced $HOME
+    "echo hi & sudo reboot",
+    "if true; then sudo reboot; fi",
+    "while true; do sudo x; done",
+    "time sudo ls",
+    "(sudo reboot)",
+    "x=$(sudo id)",
+    'rm -rf "$HOME"',
+    "rm -rf ${HOME}/",
+    "rm -rf '~'",
   ];
   for (const command of hits) {
     const hit = matchToolCall({ toolName: "bash", input: { command } }, gate(), "/p");
@@ -65,7 +74,7 @@ test("quoted text containing a separator is a known false positive in ask mode (
 });
 
 test("ordinary commands and other tools pass", () => {
-  const passes = ["git push origin feature", "rm -rf node_modules", "rm -rf ./build/", "rm -rf /tmp/x", "rm -rf ~/x", "echo sudo", "grep sudo README.md", "chmod 755 bin/pin"];
+  const passes = ["git push origin feature", "rm -rf node_modules", "rm -rf ./build/", "rm -rf /tmp/x", "rm -rf ~/x", "rm -rf ${HOME}/x", "echo sudo", "grep sudo README.md", "chmod 755 bin/pin", "if true; then echo ok; fi", "echo $(date)"];
   for (const command of passes) {
     assert.equal(matchToolCall({ toolName: "bash", input: { command } }, gate(), "/p"), undefined, `unexpected hit for: ${command}`);
   }
@@ -111,7 +120,7 @@ test("block mode from an account config blocks even with UI, and a broken config
     const r = (await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, fakeCtx())) as { block: boolean };
     assert.equal(r.block, true);
 
-    resetRuntimeConfigForTests();
+    await sleep(15); // a different mtime lets the session notice the rewrite
     writeFileSync(join(dir, "adonis-pi.json"), "{ broken");
     const warnings: string[] = [];
     const ctx = fakeCtx({ ui: { ...fakeCtx().ui, notify: (m: string) => warnings.push(m), confirm: async () => true } });
@@ -126,26 +135,17 @@ test("block mode from an account config blocks even with UI, and a broken config
   }
 });
 
-test("asking sends a PermissionRequest notification", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-gate-"));
-  const capture = join(dir, "capture.txt");
-  writeFileSync(join(dir, "adonis-pi.json"), JSON.stringify({ notify: { command: CAPTURE } }));
-  process.env.PI_CODING_AGENT_DIR = dir;
-  process.env.CAPTURE_FILE = capture;
-  try {
-    const { pi, emit } = createFakePi();
-    permissionGate(pi);
-    await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, fakeCtx());
-    const { readFileSync, existsSync } = await import("node:fs");
-    const { setTimeout: sleep } = await import("node:timers/promises");
-    for (let i = 0; i < 50 && !(existsSync(capture) && readFileSync(capture, "utf8").includes("SECRETS")); i++) await sleep(20);
-    const out = readFileSync(capture, "utf8");
-    assert.match(out, /"hook_event_name":"PermissionRequest"/);
-    assert.match(out, /"tool_name":"bash"/);
-    assert.match(out, /"tool_input":\{"command":"sudo ls"\}/);
-    assert.match(out, /^ARGS --agent pi$/m);
-  } finally {
-    delete process.env.PI_CODING_AGENT_DIR;
-    delete process.env.CAPTURE_FILE;
-  }
+test("asking sends a PermissionRequest notification in the TUI, none in rpc, and never when the user is not asked", async () => {
+  const notifier = fakeNotifier();
+  const { pi, emit } = createFakePi();
+  permissionGate(pi, notifier.deps);
+  await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, fakeCtx());
+  assert.equal(notifier.sent.length, 1);
+  assert.deepEqual(notifier.sent[0].args, ["--agent", "pi"]);
+  assert.equal(notifier.sent[0].payload.hook_event_name, "PermissionRequest");
+  assert.deepEqual(notifier.sent[0].payload.tool_input, { command: "sudo ls" });
+  await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, fakeCtx({ mode: "rpc" }));
+  assert.equal(notifier.sent.length, 1, "rpc prompts but does not notify");
+  await emit("tool_call", { toolName: "bash", input: { command: "sudo ls" } }, fakeCtx({ mode: "print", hasUI: false }));
+  assert.equal(notifier.sent.length, 1, "a block without a prompt notifies nobody");
 });

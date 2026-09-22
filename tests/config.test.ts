@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import { agentDir, expandTilde, resolveEnvRef, loadTemplate, loadConfig, ConfigError } from "../lib/config.ts";
+import { accountAgentDir, agentDir, envRefs, expandTilde, missingEnvRefs, resolveEnvRef, loadTemplate, loadConfig, ConfigError } from "../lib/config.ts";
 
 test("agentDir honours PI_CODING_AGENT_DIR and expands ~", () => {
   assert.equal(agentDir({ PI_CODING_AGENT_DIR: "~/.pi-002/agent" }), join(homedir(), ".pi-002/agent"));
@@ -68,4 +68,36 @@ test("loadConfig rejects malformed JSON with ConfigError", () => {
   const file = join(dir, "adonis-pi.json");
   writeFileSync(file, "{ not json");
   assert.throws(() => loadConfig({ path: file, env: {} }), ConfigError);
+});
+
+test("loadConfig rejects unknown keys at any depth so typos never become silent defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
+  const file = join(dir, "adonis-pi.json");
+  writeFileSync(file, JSON.stringify({ notify: { kinds: { confrim: false } } }));
+  assert.throws(() => loadConfig({ path: file, env: {} }), (e: unknown) => e instanceof ConfigError && /unknown key "notify\.kinds\.confrim"/.test((e as Error).message));
+  writeFileSync(file, JSON.stringify({ bogus: 1 }));
+  assert.throws(() => loadConfig({ path: file, env: {} }), /unknown key "bogus"/);
+});
+
+test("loadConfig extends template arrays instead of replacing them, without duplicates", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
+  const file = join(dir, "adonis-pi.json");
+  const first = loadTemplate().permissionGate.denyCommands[0];
+  writeFileSync(file, JSON.stringify({ permissionGate: { denyCommands: ["^\\s*curl\\b", first], protectedPaths: ["~/.gnupg/**"] } }));
+  const cfg = loadConfig({ path: file, env: {} });
+  assert.equal(cfg.permissionGate.denyCommands.length, 6);
+  assert.equal(cfg.permissionGate.denyCommands.at(-1), "^\\s*curl\\b");
+  assert.deepEqual(cfg.permissionGate.protectedPaths, ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**"]);
+});
+
+test("accountAgentDir follows the Family layout", () => {
+  assert.equal(accountAgentDir(1, "/h"), "/h/.pi/agent");
+  assert.equal(accountAgentDir(2, "/h"), "/h/.pi-002/agent");
+  assert.equal(accountAgentDir(12, "/h"), "/h/.pi-012/agent");
+});
+
+test("envRefs accepts $VAR and ${VAR} in any case and skips invalid JSON", () => {
+  assert.deepEqual(envRefs('{"a":"$glm_key","b":"${KIMI_API_KEY}","c":"literal $X"}'), ["KIMI_API_KEY", "glm_key"]);
+  assert.deepEqual(envRefs("{nope"), []);
+  assert.deepEqual(missingEnvRefs('{"a":"$A","b":"$B"}', { A: "1", B: "" }), ["B"]);
 });

@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadTemplate, type AdonisPiConfig, type NotifyConfig } from "../../lib/config.ts";
+import type { SessionDeps } from "../../lib/session.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
@@ -66,4 +68,13 @@ export function fakeCtx(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   };
+}
+
+/** A Session dependency set with an in-memory spawn adapter and a template config whose notifier is "on". */
+export function fakeNotifier(notifyOverrides: Partial<NotifyConfig> = {}, configOverrides: Partial<AdonisPiConfig> = {}) {
+  const sent: { args: string[]; payload: Record<string, unknown> }[] = [];
+  const config: AdonisPiConfig = { ...loadTemplate(), ...configOverrides };
+  config.notify = { ...config.notify, command: "/fake/notifier", ...notifyOverrides };
+  const deps: SessionDeps = { loadConfig: () => config, spawn: (_n, args, payload) => sent.push({ args, payload }) };
+  return { sent, deps, config };
 }

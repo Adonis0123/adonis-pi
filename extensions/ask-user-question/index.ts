@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getRuntimeConfig } from "../../lib/runtime-config.ts";
-import { buildPayload, sendNotify, sessionRef } from "../../lib/notify.ts";
+import { getSession, type SessionDeps } from "../../lib/session.ts";
 import { OTHER_LABEL, type Answer, type QuestionInput } from "./state.ts";
 import { askOne, askOneRpc } from "./ui.ts";
 
@@ -36,7 +35,7 @@ export function formatAnswers(questions: QuestionInput[], answers: (Answer | nul
     .join("\n");
 }
 
-export default function askUserQuestion(pi: ExtensionAPI) {
+export default function askUserQuestion(pi: ExtensionAPI, deps: SessionDeps = {}) {
   pi.registerTool({
     name: "AskUserQuestion",
     label: "Ask user",
@@ -47,17 +46,15 @@ export default function askUserQuestion(pi: ExtensionAPI) {
     executionMode: "sequential",
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const questions = params.questions as QuestionInput[];
-      const cfg = getRuntimeConfig(ctx);
-      if (!ctx.hasUI || !cfg.askUserQuestion.enabled) {
+      const session = getSession(ctx, deps);
+      if (!session.surface.canPrompt || !session.config.askUserQuestion.enabled) {
         return {
           content: [{ type: "text", text: "Error: AskUserQuestion UI not available (non-interactive mode or disabled). Ask the question in plain text and stop; do not choose for the user." }],
           details: { answers: questions.map(() => null) } as Details,
         };
       }
-      const ask = ctx.mode === "tui" ? askOne : askOneRpc;
-      if (cfg.notify.kinds.confirm) {
-        sendNotify(cfg.notify, ["--agent", "pi"], buildPayload("question", sessionRef(ctx), { tool_input: { questions: questions.map((q) => ({ question: q.question, header: q.header })) } }));
-      }
+      const ask = session.surface.canPanel ? askOne : askOneRpc;
+      session.notify({ kind: "question", questions });
       const answers: (Answer | null)[] = [];
       for (let i = 0; i < questions.length; i++) {
         const a = await ask(ctx as any, questions[i], i, questions.length);

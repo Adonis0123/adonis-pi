@@ -24,13 +24,17 @@ export function globToRegExp(glob: string): RegExp {
 }
 
 const PATH_TOOLS = new Set(["write", "edit"]);
-const SEPARATOR = /\r?\n|;|&&|\|\||\|/;
+// `&&` and `||` must precede `&` and `|`; `$(` must precede `(`. Braces are not separators so `${HOME}` stays whole.
+const SEPARATOR = /\r?\n|;|&&|\|\||\||&|\$\(|\(|\)/;
+// Shell keywords that may precede a command inside one segment: `if x; then sudo y; fi`, `time sudo y`.
+const LEADING_KEYWORDS = /^(\s*)(?:(?:if|then|else|elif|do|while|until|time|!)\s+)+/;
 const SHELL_C = /\b(?:ba|z|da)?sh\s+-[a-zA-Z]*c[a-zA-Z]*\s+(['"])([\s\S]*?)\1/g;
 
 /**
- * Split a command into the pieces a deny rule should see: each separated command, plus the body of
- * any `sh -c '…'` wrapper (recursively). Wrapper bodies are masked before splitting so a `|` inside
- * the quotes does not break the quoted text; the outer pieces keep their original wording.
+ * Split a command into the pieces a deny rule should see: each separated command (also inside
+ * subshells and `$(…)`), with leading shell keywords removed, plus the body of any `sh -c '…'`
+ * wrapper (recursively). Wrapper bodies are masked before splitting so a `|` inside the quotes does
+ * not break the quoted text; the outer pieces keep their original wording.
  */
 export function segments(command: string): string[] {
   const out: string[] = [];
@@ -42,7 +46,8 @@ export function segments(command: string): string[] {
   });
   for (const part of masked.split(SEPARATOR)) {
     if (part.trim().length === 0) continue;
-    let text = part;
+    let text = part.replace(LEADING_KEYWORDS, "$1");
+    if (text.trim().length === 0) continue;
     for (const w of wrappers) text = text.replace(w.token, w.original);
     out.push(text);
   }

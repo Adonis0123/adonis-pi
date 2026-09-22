@@ -1,15 +1,8 @@
-import { test, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { setTimeout as sleep } from "node:timers/promises";
-import { createFakePi, fakeCtx } from "./helpers/fake-pi.ts";
+import { createFakePi, fakeCtx, fakeNotifier } from "./helpers/fake-pi.ts";
 import attentionNotify, { decideSettled, lastAssistantFromBranch } from "../extensions/attention-notify/index.ts";
-import { resetRuntimeConfigForTests } from "../lib/runtime-config.ts";
 
-const CAPTURE = fileURLToPath(new URL("./fixtures/capture-notify.sh", import.meta.url));
 const kinds = { confirm: true, fail: true, idle: false };
 const asst = (text: string, stopReason = "stop", errorMessage?: string) => ({
   type: "message",
@@ -17,8 +10,6 @@ const asst = (text: string, stopReason = "stop", errorMessage?: string) => ({
 });
 const user = (text: string) => ({ type: "message", message: { role: "user", content: text } });
 const toolResult = () => ({ type: "message", message: { role: "toolResult", content: [] } });
-
-beforeEach(() => resetRuntimeConfigForTests());
 
 test("lastAssistantFromBranch picks the last assistant message entry, ignoring later tool results and non-message entries", () => {
   const entries = [user("hi"), asst("first"), toolResult(), asst("second"), toolResult(), { type: "custom", customType: "x" }];
@@ -47,78 +38,53 @@ test("decideSettled: kinds gate both branches; Stop is sent only when confirm is
   assert.deepEqual(decideSettled([asst("done")], { confirm: true, fail: true, idle: true }), { kind: "stop", text: "done" });
 });
 
-async function withCapture(run: (capture: string) => Promise<void>) {
-  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-attn-"));
-  const capture = join(dir, "capture.txt");
-  writeFileSync(join(dir, "adonis-pi.json"), JSON.stringify({ notify: { command: CAPTURE } }));
-  process.env.PI_CODING_AGENT_DIR = dir;
-  process.env.CAPTURE_FILE = capture;
-  try {
-    await run(capture);
-  } finally {
-    delete process.env.PI_CODING_AGENT_DIR;
-    delete process.env.CAPTURE_FILE;
-  }
-}
-async function read(capture: string) {
-  for (let i = 0; i < 50 && !(existsSync(capture) && readFileSync(capture, "utf8").includes("SECRETS")); i++) await sleep(20);
-  return existsSync(capture) ? readFileSync(capture, "utf8") : "";
-}
 const ctxWithBranch = (entries: unknown[], overrides: Record<string, unknown> = {}) =>
   fakeCtx({ sessionManager: { ...fakeCtx().sessionManager, getBranch: () => entries }, ...overrides });
 
 test("agent_settled sends Stop with last_assistant_message in TUI mode", async () => {
-  await withCapture(async (capture) => {
-    const { pi, emit } = createFakePi();
-    attentionNotify(pi);
-    await emit("agent_settled", {}, ctxWithBranch([user("go"), asst("all done?")]));
-    const out = await read(capture);
-    assert.match(out, /"hook_event_name":"Stop"/);
-    assert.match(out, /"last_assistant_message":"all done\?"/);
-    assert.match(out, /^ARGS --agent pi$/m);
-  });
+  const n = fakeNotifier();
+  const { pi, emit } = createFakePi();
+  attentionNotify(pi, n.deps);
+  await emit("agent_settled", {}, ctxWithBranch([user("go"), asst("all done?")]));
+  assert.equal(n.sent.length, 1);
+  assert.deepEqual(n.sent[0].args, ["--agent", "pi"]);
+  assert.equal(n.sent[0].payload.hook_event_name, "Stop");
+  assert.equal(n.sent[0].payload.last_assistant_message, "all done?");
 });
 
 test("agent_settled sends StopFailure with a mapped error code", async () => {
-  await withCapture(async (capture) => {
-    const { pi, emit } = createFakePi();
-    attentionNotify(pi);
-    await emit("agent_settled", {}, ctxWithBranch([asst("", "error", "402 insufficient balance")]));
-    const out = await read(capture);
-    assert.match(out, /"hook_event_name":"StopFailure"/);
-    assert.match(out, /"error":"billing_error"/);
-  });
+  const n = fakeNotifier();
+  const { pi, emit } = createFakePi();
+  attentionNotify(pi, n.deps);
+  await emit("agent_settled", {}, ctxWithBranch([asst("", "error", "402 insufficient balance")]));
+  assert.equal(n.sent[0].payload.hook_event_name, "StopFailure");
+  assert.equal(n.sent[0].payload.error, "billing_error");
 });
 
 test("agent_end sends nothing (only agent_settled reports)", async () => {
-  await withCapture(async (capture) => {
-    const { pi, emit } = createFakePi();
-    attentionNotify(pi);
-    await emit("agent_end", { messages: [] }, ctxWithBranch([asst("mid-run")]));
-    await sleep(150);
-    assert.equal(existsSync(capture), false);
-  });
+  const n = fakeNotifier();
+  const { pi, emit } = createFakePi();
+  attentionNotify(pi, n.deps);
+  await emit("agent_end", { messages: [] }, ctxWithBranch([asst("mid-run")]));
+  assert.equal(n.sent.length, 0);
 });
 
-test("tool_result marks activity with --mark and PostToolUse", async () => {
-  await withCapture(async (capture) => {
-    const { pi, emit } = createFakePi();
-    attentionNotify(pi);
-    await emit("tool_result", { toolName: "read", toolCallId: "c1", content: [] }, fakeCtx());
-    const out = await read(capture);
-    assert.match(out, /^ARGS --agent pi --mark$/m);
-    assert.match(out, /"hook_event_name":"PostToolUse"/);
-    assert.match(out, /"tool_name":"read"/);
-  });
+test("tool_result marks activity with --mark and PostToolUse, regardless of kinds", async () => {
+  const n = fakeNotifier({ kinds: { confirm: false, fail: false, idle: false } });
+  const { pi, emit } = createFakePi();
+  attentionNotify(pi, n.deps);
+  await emit("tool_result", { toolName: "read", toolCallId: "c1", content: [] }, fakeCtx());
+  assert.deepEqual(n.sent[0].args, ["--agent", "pi", "--mark"]);
+  assert.equal(n.sent[0].payload.hook_event_name, "PostToolUse");
+  assert.equal(n.sent[0].payload.tool_name, "read");
 });
 
-test("nothing is sent outside TUI mode", async () => {
-  await withCapture(async (capture) => {
-    const { pi, emit } = createFakePi();
-    attentionNotify(pi);
-    await emit("agent_settled", {}, ctxWithBranch([asst("x")], { mode: "print", hasUI: false }));
-    await emit("tool_result", { toolName: "read" }, fakeCtx({ mode: "rpc", hasUI: true }));
-    await sleep(150);
-    assert.equal(existsSync(capture), false);
-  });
+test("nothing is sent outside TUI mode (print or rpc)", async () => {
+  const n = fakeNotifier();
+  const { pi, emit } = createFakePi();
+  attentionNotify(pi, n.deps);
+  await emit("agent_settled", {}, ctxWithBranch([asst("x")], { mode: "print", hasUI: false }));
+  await emit("tool_result", { toolName: "read" }, fakeCtx({ mode: "rpc", hasUI: true }));
+  await emit("agent_settled", {}, ctxWithBranch([asst("x?")], { mode: "rpc", hasUI: true }));
+  assert.equal(n.sent.length, 0);
 });

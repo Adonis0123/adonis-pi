@@ -5,7 +5,7 @@
     "mode": "ask",
     "denyCommands": [
       "^\\s*(\\w+=\\S*\\s+)*((env|command|exec|nohup|time)\\s+)*sudo\\b",
-      "^\\s*rm\\s+(\\S+\\s+)*(/|~|\\$HOME)(/\\*)?/?(\\s|$)",
+      "^\\s*rm\\s+(\\S+\\s+)*[\"']?(/|~|\\$HOME|\\$\\{HOME\\})[\"']?(/\\*)?/?[\"']?(\\s|$)",
       "^\\s*git\\s+(-C\\s+\\S+\\s+)?push\\b.*(\\s(--force|--force-with-lease)\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s\\+\\S+)",
       "^\\s*chmod\\s+(-R\\s+)?0?777\\b",
       "^\\s*dd\\s+if="

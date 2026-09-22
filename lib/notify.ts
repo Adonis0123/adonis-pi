@@ -68,6 +68,36 @@ export function lastAssistantText(messages: ReadonlyArray<MessageLike>): { text:
   return undefined;
 }
 
+export interface BranchEntry {
+  type: string;
+  message?: { role: string; content?: unknown; stopReason?: string; errorMessage?: string };
+}
+
+export function lastAssistantFromBranch(entries: ReadonlyArray<BranchEntry>) {
+  const messages = entries.filter((e) => e.type === "message" && e.message).map((e) => e.message!);
+  return lastAssistantText(messages);
+}
+
+export type Kinds = NotifyConfig["kinds"];
+export type SettledDecision = { kind: "fail"; error: string; details: string } | { kind: "stop"; text: string } | undefined;
+
+/** What an `agent_settled` means for the Notifier: an actionable failure, a Stop the notifier may turn into confirm/idle, or nothing. */
+export function decideSettled(entries: ReadonlyArray<BranchEntry>, kinds: Kinds): SettledDecision {
+  const last = lastAssistantFromBranch(entries);
+  if (!last) return undefined;
+  if (last.stopReason === "aborted") return undefined; // the user interrupted; nobody is waiting on a notification
+  if (last.stopReason === "error") {
+    if (!kinds.fail) return undefined;
+    const code = classifyError(last.errorMessage ?? "");
+    return code ? { kind: "fail", error: code, details: last.errorMessage ?? "" } : undefined;
+  }
+  // The notifier turns one Stop into either confirm or idle; with confirm off we cannot send Stop at all
+  // (config validation already rejects idle-without-confirm).
+  if (!kinds.confirm) return undefined;
+  return { kind: "stop", text: last.text };
+}
+
+/** The real spawn adapter: detached child, JSON on stdin, provider secrets stripped from its environment. */
 export function sendNotify(
   notify: NotifyConfig,
   args: string[],
