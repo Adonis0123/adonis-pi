@@ -82,3 +82,14 @@
 - 不改：权限门 `detail` 里的 MCP 参数只进 TUI 确认框，不进 Notifier（Notifier 收到的是 session.ts 的 summary），原 Low 不成立；JSON 文件的空白重排已提交，不再回改。
 
 结果：`npm test` 104 通过，typecheck、leak-check 通过；账号 1 `pin doctor 1` 全 OK；真机启动后 system prompt 边界节仍列出 kimi-cu、deepwiki、figma-rest 可用、figma 不可用。剩余候选（拆 `lib/config.ts`、doctor 结构化记录、账号引用统一、proxy.env 解析对 sh 做 oracle）未动。
+
+## 架构候选 2–5（2026-09-22 晚）
+
+用户决定把剩余四个候选也做掉。
+
+- 拆 `lib/config.ts`（442 行、33 个 export）为四个 module，各自一个 seam：`lib/layout.ts`（布局、Template 列表、Bridge 锁版、占位符）、`lib/config.ts`（Config 加载 / 合并 / 校验 / `$VAR` 解析，173 行）、`lib/mcp.ts`（MCP Config 类型、Bridge 引用语法、`resolveCommand`、`serverStatus`）、`lib/environment.ts`（`proxy.env` 静态解析、KimiCU 探测；只有 Launcher import）。Extension 面对的符号从 33 个缩到 `layout` 2 个、`config` 6 个、`mcp` 4 个、`refs` 1 个。ADR 0002 规则 3 变成 `tests/scaffold.test.ts` 里的 import 图检查。
+- doctor 结构化：`inspectAccount` 返回 `Finding {level, subject, item?, message}`，CLI 渲染一行；`bin/lib/account.ts` 加 main 判定，测试可直接 import。`tests/pin.test.ts` 里 8 条 doctor 用例改为按 `{subject, item, level}` 断言（例如 `mcp.json` / `figma-rest` / `WARN`），逐字正则只剩渲染格式与退出码两处。措辞改动一处：`WARN <file> $VAR is referenced but proxy.env leaves it empty`（原 `references $VAR but …`），让「文件 变量 结论」成为所有变量行的统一形状。
+- Env Ref 统一：`lib/refs.ts` 的 `accountRefs(dir)` 一处算「账号引用了哪些变量」，doctor、startup-check 的 `missingByFile`、`pin --dry-run` 三个消费方；`bin/pin` 里 grep `proxy.env` 的第三份实现删掉，改为 `account vars`（引用名 ∪ `proxy.env` 导出名，用同一个解析器）。删掉无调用方的 `missingEnvRefs`。
+- sh oracle：`tests/environment.test.ts` 把六轮评审攒的行形（18 行常规语料、13 个降级文件、非 ASCII 空白、动过 HOME 的文件，加两例重赋值）逐个写成临时文件，用 `sh` 按 `bin/pin` 的方式 source 后读 `env -0`，比对每个变量：解析器要么与 sh 一致，要么说「无法判断」；sh 拒绝的文件解析器必须不确定。本轮比对 60 余个结论全部一致。变异检查：把「空字面量」改判为 set，oracle 立即报 `$B parser=set sh=empty`；恢复后通过。
+
+结果：`npm test` 107 通过（原 104；新增 oracle、refs、import 图三条），typecheck、leak-check 通过；账号 1 `pin doctor 1` 全 OK，`PIN_DRY_RUN=1 pin 1` 仍列出四个引用名与 `proxy.env` 导出的 `KIMI_API_KEY`；真机 `pin 1 --no-skills --no-session --tools read -p …` 启动正常，模型按 system prompt 边界节回答可用服务器为 `kimi-cu, deepwiki, figma-rest`，说明新的 `lib/` module 图能被 pi 的 extension 加载器解析。

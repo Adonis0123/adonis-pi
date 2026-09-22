@@ -2,12 +2,18 @@
 //   account.ts dir <n>                 print the agent dir of account n
 //   account.ts setup <n> <pinRoot>     materialise templates (never overwrites), register the package, link AGENTS.md
 //   account.ts doctor <n> <pinRoot>    OK/WARN/FAIL report; exit 1 on any FAIL
-//   account.ts refs <agentDir>         env vars the account's JSON files reference as "$VAR"
-// Layout, template list and the $VAR grammar come from lib/config.ts so the launcher and the extensions agree.
+//   account.ts vars <agentDir>         env var names the account references or its proxy.env exports (for pin --dry-run)
+// doctor is `inspectAccount` (structured Findings, what tests call) plus one line of rendering; only the CLI prints.
+// Layout, Template list, `$VAR` grammar and the Server Status verdict come from lib/, so the launcher and the extensions agree.
 import { execFileSync } from "node:child_process";
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountAgentDir, configEnvRefs, envRefs, expandTilde, KIMI_CU_PLACEHOLDER, loadConfig, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, mcpBareRefs, mcpEnvRefs, proxyEnvLookup, proxyEnvState, proxyEnvView, readMcpConfig, type ProxyEnv, resolveCommand, resolveKimiCuBin, serverStatus, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/config.ts";
+import { fileURLToPath } from "node:url";
+import { loadConfig } from "../../lib/config.ts";
+import { type ProxyEnv, proxyEnvState, proxyEnvView, resolveKimiCuBin } from "../../lib/environment.ts";
+import { accountAgentDir, expandTilde, KIMI_CU_PLACEHOLDER, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/layout.ts";
+import { mcpBareRefs, readMcpConfig, resolveCommand, serverStatus } from "../../lib/mcp.ts";
+import { accountRefs } from "../../lib/refs.ts";
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -91,26 +97,15 @@ function addPackage(settingsPath: string, pkg: string): "present" | "added" {
   return "added";
 }
 
-function which(name: string): string | undefined {
-  return resolveCommand(name, process.env);
-}
-
-/** Env vars the account references: models.json values, the effective Config (account merged over template), and MCP server `env` blocks. */
-function refsByFile(dir: string): [string, string[]][] {
-  const out: [string, string[]][] = [];
-  const models = join(dir, "models.json");
-  if (existsSync(models)) out.push(["models.json", envRefs(readFileSync(models, "utf8"))]);
-  out.push(["adonis-pi.json", configEnvRefs(join(dir, "adonis-pi.json"))]);
-  const mcp = join(dir, "mcp.json");
-  if (existsSync(mcp)) {
-    try {
-      out.push(["mcp.json", mcpEnvRefs(readMcpConfig(mcp))]);
-    } catch {} // doctor reports the broken file itself
-  }
-  return out;
-}
-function accountRefs(dir: string): string[] {
-  return [...new Set(refsByFile(dir).flatMap(([, vars]) => vars))].sort();
+/**
+ * Variable names `pin --dry-run` reports as set/unset (names only, never values): every `$VAR` the account's files
+ * reference plus every variable its proxy.env exports (built-in pi providers such as kimi-coding read their key from
+ * the environment without any file naming it). Names an unparseable proxy.env line exports are not seen.
+ */
+function accountVars(dir: string): string[] {
+  const proxy = join(dir, "proxy.env");
+  const exported = existsSync(proxy) ? [...proxyEnvState(readFileSync(proxy, "utf8")).state.keys()] : [];
+  return [...new Set([...accountRefs(dir).map((r) => r.name), ...exported])];
 }
 
 function setup(n: number, pinRoot: string): void {
@@ -153,7 +148,7 @@ function setup(n: number, pinRoot: string): void {
   if (adapter?.version === MCP_ADAPTER_VERSION) console.log(`keep  ${adapter.dir} (${adapter.version})`);
   else if (process.env.PIN_SKIP_INSTALL === "1") console.log(`note  ${MCP_ADAPTER_NAME} ${adapter?.version ?? "not installed"}; install skipped (PIN_SKIP_INSTALL)`);
   else {
-    const pi = which("pi");
+    const pi = resolveCommand("pi");
     if (!pi) console.log(`note  pi not on PATH; run later: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE}`);
     else {
       try {
@@ -191,23 +186,39 @@ function setup(n: number, pinRoot: string): void {
   }
 }
 
-function doctor(n: number, pinRoot: string): number {
-  const d = accountAgentDir(n);
-  let fails = 0;
-  const ok = (m: string) => console.log(`OK   ${m}`);
-  const warn = (m: string) => console.log(`WARN ${m}`);
-  const fail = (m: string) => {
-    console.log(`FAIL ${m}`);
-    fails++;
-  };
+/**
+ * One doctor conclusion (CONTEXT.md "Finding"). `subject` is the Account Layer file or component judged ("settings.json",
+ * "proxy.env", "pi", "pi-mcp-adapter", "account"); `item` narrows it to one MCP Server name, `$VAR` or package spec.
+ * `message` never carries a value from proxy.env or a url with its query.
+ */
+export type Level = "OK" | "WARN" | "FAIL";
+export interface Finding {
+  level: Level;
+  subject: string;
+  item?: string;
+  message: string;
+}
+export function renderFinding(f: Finding): string {
+  return `${f.level.padEnd(4)} ${f.subject}${f.item ? ` ${f.item}` : ""} ${f.message}`;
+}
+
+/**
+ * Every check `pin doctor` makes on account n, as records. `env` supplies PATH (bare mcp.json commands, `pi`) and the
+ * environment `pi --version` runs in; proxy.env is read statically and never sourced.
+ */
+export function inspectAccount(n: number, pinRoot: string, opts: { home?: string; env?: NodeJS.ProcessEnv } = {}): Finding[] {
+  const env = opts.env ?? process.env;
+  const d = accountAgentDir(n, opts.home);
+  const out: Finding[] = [];
+  const add = (level: Level, subject: string, message: string, item?: string) => out.push(item === undefined ? { level, subject, message } : { level, subject, item, message });
   if (!existsSync(d)) {
-    fail(`account dir ${d} missing (run: pin setup ${n})`);
-    return 1;
+    add("FAIL", "account", `dir ${d} missing (run: pin setup ${n})`);
+    return out;
   }
   for (const f of TEMPLATED_FILES) {
     const p = join(d, f);
     if (!existsSync(p)) {
-      fail(`${f} missing`);
+      add("FAIL", f, "missing");
       continue;
     }
     if (f === "adonis-pi.json") continue; // merged at runtime; validated below instead of diffed
@@ -217,17 +228,17 @@ function doctor(n: number, pinRoot: string): number {
     } catch {
       dr = ["unparseable"];
     }
-    if (dr.length === 0) ok(`${f} matches template keys`);
-    else warn(`${f} drift: ${dr.join(",")}`);
+    if (dr.length === 0) add("OK", f, "matches template keys");
+    else add("WARN", f, `drift: ${dr.join(",")}`);
   }
   const cfgPath = join(d, "adonis-pi.json");
   if (existsSync(cfgPath)) {
     // The same validator the extensions use: an invalid file means they silently run on template defaults.
     try {
       loadConfig({ path: cfgPath });
-      ok("adonis-pi.json is valid");
+      add("OK", "adonis-pi.json", "is valid");
     } catch (e) {
-      fail(`adonis-pi.json invalid: ${(e as Error).message}`);
+      add("FAIL", "adonis-pi.json", `invalid: ${(e as Error).message}`);
     }
   }
   const proxy = join(d, "proxy.env");
@@ -235,97 +246,112 @@ function doctor(n: number, pinRoot: string): number {
   let envState: ProxyEnv = { state: new Map(), certain: true };
   if (existsSync(proxy)) {
     const mode = statSync(proxy).mode & 0o777;
-    if (mode === 0o600) ok("proxy.env mode 600");
-    else fail(`proxy.env mode is ${mode.toString(8)}, must be 600`);
+    if (mode === 0o600) add("OK", "proxy.env", "mode 600");
+    else add("FAIL", "proxy.env", `mode is ${mode.toString(8)}, must be 600`);
     envState = proxyEnvState(readFileSync(proxy, "utf8"));
-    if (!envState.certain) warn("proxy.env has lines doctor cannot parse (only `export NAME=value`, `NAME=value`, `unset NAME` and comments are understood); variable checks below are reported as unknown");
-    for (const [file, vars] of refsByFile(d)) {
-      for (const v of vars) {
-        const st = proxyEnvLookup(envState, v);
-        if (st === "set") ok(`${file} $${v} provided`);
-        else if (st === "unknown") warn(`${file} $${v} is computed when proxy.env is sourced; doctor cannot check it (PIN_DRY_RUN=1 pin ${n} shows set/unset)`);
-        else warn(`${file} references $${v} but proxy.env leaves it empty`);
-      }
+    if (!envState.certain) add("WARN", "proxy.env", "has lines doctor cannot parse (only `export NAME=value`, `NAME=value`, `unset NAME` and comments are understood); variable checks below are reported as unknown");
+    const view = proxyEnvView(envState);
+    for (const { file, name } of accountRefs(d)) {
+      const st = view(name);
+      if (st === "set") add("OK", file, "provided", `$${name}`);
+      else if (st === "unknown") add("WARN", file, `is computed when proxy.env is sourced; doctor cannot check it (PIN_DRY_RUN=1 pin ${n} shows set/unset)`, `$${name}`);
+      else add("WARN", file, "is referenced but proxy.env leaves it empty", `$${name}`);
     }
-  } else warn("proxy.env missing (API providers will not authenticate)");
+  } else add("WARN", "proxy.env", "missing (API providers will not authenticate)");
   const settings = join(d, "settings.json");
   if (existsSync(settings)) {
     const packages = packagesOf(settings);
-    if (packages.includes(pinRoot)) ok(`settings.json packages includes ${pinRoot}`);
-    else fail(`settings.json packages lacks ${pinRoot} (run: pin setup ${n})`);
-    for (const p of packages) if (p.startsWith("/") && !existsSync(p)) warn(`settings.json packages entry ${p} does not exist on disk`);
+    if (packages.includes(pinRoot)) add("OK", "settings.json", `packages includes ${pinRoot}`);
+    else add("FAIL", "settings.json", `packages lacks ${pinRoot} (run: pin setup ${n})`);
+    for (const p of packages) if (p.startsWith("/") && !existsSync(p)) add("WARN", "settings.json", `packages entry ${p} does not exist on disk`);
     const entries = adapterEntries(packages);
-    if (entries.length === 1 && entries[0] === MCP_ADAPTER_PACKAGE) ok(`settings.json packages pins ${MCP_ADAPTER_PACKAGE}`);
-    else if (entries.length === 0) fail(`settings.json packages lacks ${MCP_ADAPTER_PACKAGE} (run: pin setup ${n})`);
-    else fail(`settings.json packages has ${entries.join(", ")}; expected exactly ${MCP_ADAPTER_PACKAGE} (edit settings.json, then: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
+    if (entries.length === 1 && entries[0] === MCP_ADAPTER_PACKAGE) add("OK", "settings.json", `packages pins ${MCP_ADAPTER_PACKAGE}`);
+    else if (entries.length === 0) add("FAIL", "settings.json", `packages lacks ${MCP_ADAPTER_PACKAGE} (run: pin setup ${n})`);
+    else add("FAIL", "settings.json", `packages has ${entries.join(", ")}; expected exactly ${MCP_ADAPTER_PACKAGE} (edit settings.json, then: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
     const adapter = installedAdapter(d);
-    if (!adapter) fail(`${MCP_ADAPTER_NAME} not installed under ${join(d, "npm")} (run: pin setup ${n})`);
-    else if (adapter.version === MCP_ADAPTER_VERSION) ok(`${MCP_ADAPTER_NAME} ${adapter.version} installed`);
-    else fail(`${MCP_ADAPTER_NAME} ${adapter.version || "?"} installed, template pins ${MCP_ADAPTER_VERSION} (run: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
+    if (!adapter) add("FAIL", MCP_ADAPTER_NAME, `not installed under ${join(d, "npm")} (run: pin setup ${n})`);
+    else if (adapter.version === MCP_ADAPTER_VERSION) add("OK", MCP_ADAPTER_NAME, `${adapter.version} installed`);
+    else add("FAIL", MCP_ADAPTER_NAME, `${adapter.version || "?"} installed, template pins ${MCP_ADAPTER_VERSION} (run: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
   }
   const mcpPath = join(d, "mcp.json");
   if (existsSync(mcpPath)) {
     try {
       const servers = readMcpConfig(mcpPath).mcpServers;
-      const view = { env: proxyEnvView(envState), path: process.env.PATH };
+      const view = { env: proxyEnvView(envState), path: env.PATH };
       for (const [name, srv] of Object.entries(servers)) {
         // A whole-string "$VAR" may be a mis-written reference (the Bridge sends it literally) or a deliberate literal: warn, never disable.
         const bare = mcpBareRefs(srv);
-        if (bare.length) warn(`mcp.json ${name} has bare ${bare.map((v) => `$${v}`).join(", ")}; the MCP Bridge sends that literally — if a variable was meant, write ${bare.map((v) => `\${${v}}`).join(", ")}`);
-        // One verdict shared with startup-check (lib/config.ts serverStatus); this block only phrases it. PATH is this
-        // shell's; a proxy.env that changes PATH is not modelled.
+        if (bare.length) add("WARN", "mcp.json", `has bare ${bare.map((v) => `$${v}`).join(", ")}; the MCP Bridge sends that literally — if a variable was meant, write ${bare.map((v) => `\${${v}}`).join(", ")}`, name);
+        // The Server Status verdict (lib/mcp.ts), phrased. PATH is this shell's; a proxy.env that changes PATH is not modelled.
         const st = serverStatus(srv, view);
         const shown = (target: string) => (srv.command === undefined ? redactUrl(target) : target);
-        if (st.usable) ok(`mcp.json ${name} -> ${shown(st.target)}${st.refs.length ? ` (env: ${st.refs.map((v) => `$${v}`).join(", ")})` : ""}`);
-        else if (st.kind === "disabled") ok(`mcp.json ${name} disabled`);
-        else if (st.kind === "placeholder") fail(`mcp.json ${name} command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`);
-        else if (st.kind === "command-unresolved") fail(`mcp.json ${name} command ${st.command} ${describeUnresolved(st.command)}`);
-        else if (st.kind === "no-target") warn(`mcp.json ${name} has neither command nor url (unavailable)`);
-        else if (st.kind === "env-empty") warn(`mcp.json ${name} -> ${shown(st.target)} but proxy.env does not set ${st.vars.map((v) => `$${v}`).join(", ")} (unavailable until it does)`);
-        else warn(`mcp.json ${name} -> ${shown(st.target)}; availability depends on ${st.vars.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`);
+        if (st.usable) add("OK", "mcp.json", `-> ${shown(st.target)}${st.refs.length ? ` (env: ${st.refs.map((v) => `$${v}`).join(", ")})` : ""}`, name);
+        else if (st.kind === "disabled") add("OK", "mcp.json", "disabled", name);
+        else if (st.kind === "placeholder") add("FAIL", "mcp.json", `command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`, name);
+        else if (st.kind === "command-unresolved") add("FAIL", "mcp.json", `command ${st.command} ${describeUnresolved(st.command)}`, name);
+        else if (st.kind === "no-target") add("WARN", "mcp.json", "has neither command nor url (unavailable)", name);
+        else if (st.kind === "env-empty") add("WARN", "mcp.json", `-> ${shown(st.target)} but proxy.env does not set ${st.vars.map((v) => `$${v}`).join(", ")} (unavailable until it does)`, name);
+        else add("WARN", "mcp.json", `-> ${shown(st.target)}; availability depends on ${st.vars.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`, name);
       }
     } catch (e) {
-      fail(`mcp.json invalid: ${(e as Error).message}`);
+      add("FAIL", "mcp.json", `invalid: ${(e as Error).message}`);
     }
   }
   const link = join(d, "AGENTS.md");
   try {
     if (lstatSync(link).isSymbolicLink()) {
-      if (existsSync(link)) ok(`AGENTS.md -> ${readlinkSync(link)}`);
-      else fail("AGENTS.md is a dangling link");
-    } else warn("AGENTS.md is a regular file (not shared)");
+      if (existsSync(link)) add("OK", "AGENTS.md", `-> ${readlinkSync(link)}`);
+      else add("FAIL", "AGENTS.md", "is a dangling link");
+    } else add("WARN", "AGENTS.md", "is a regular file (not shared)");
   } catch {
-    warn("AGENTS.md not linked (agentsMd empty?)");
+    add("WARN", "AGENTS.md", "not linked (agentsMd empty?)");
   }
-  const pi = which("pi");
-  if (!pi) fail("pi not on PATH (npm install -g @earendil-works/pi-coding-agent@0.87.0)");
+  const pi = resolveCommand("pi", env);
+  if (!pi) add("FAIL", "pi", "not on PATH (npm install -g @earendil-works/pi-coding-agent@0.87.0)");
   else {
     let ver = "";
     try {
-      ver = /\d+\.\d+\.\d+/.exec(execFileSync(pi, ["--version"], { encoding: "utf8" }))?.[0] ?? "";
+      ver = /\d+\.\d+\.\d+/.exec(execFileSync(pi, ["--version"], { encoding: "utf8", env }))?.[0] ?? "";
     } catch {}
-    if (ver.startsWith("0.87.")) ok(`pi ${ver} on PATH (${pi})`);
-    else if (!ver) warn(`pi found at ${pi} but its version is unreadable`);
-    else warn(`pi ${ver} differs from the tested 0.87.x; run npm test in the package after upgrading pi`);
+    if (ver.startsWith("0.87.")) add("OK", "pi", `${ver} on PATH (${pi})`);
+    else if (!ver) add("WARN", "pi", `found at ${pi} but its version is unreadable`);
+    else add("WARN", "pi", `${ver} differs from the tested 0.87.x; run npm test in the package after upgrading pi`);
   }
-  return fails === 0 ? 0 : 1;
+  return out;
 }
 
-const [cmd, a, b] = process.argv.slice(2);
-switch (cmd) {
-  case "dir":
-    console.log(accountAgentDir(Number(a)));
-    break;
-  case "setup":
-    setup(Number(a), b);
-    break;
-  case "doctor":
-    process.exitCode = doctor(Number(a), b);
-    break;
-  case "refs":
-    console.log(accountRefs(a).join(" "));
-    break;
-  default:
-    console.error("account.ts: unknown command");
-    process.exitCode = 2;
+function doctor(n: number, pinRoot: string): number {
+  const findings = inspectAccount(n, pinRoot);
+  for (const f of findings) console.log(renderFinding(f));
+  return findings.some((f) => f.level === "FAIL") ? 1 : 0;
+}
+
+/** True when Node runs this file as the program (pin does), false when a test imports it. */
+function isMain(): boolean {
+  try {
+    return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
+  const [cmd, a, b] = process.argv.slice(2);
+  switch (cmd) {
+    case "dir":
+      console.log(accountAgentDir(Number(a)));
+      break;
+    case "setup":
+      setup(Number(a), b);
+      break;
+    case "doctor":
+      process.exitCode = doctor(Number(a), b);
+      break;
+    case "vars":
+      console.log(accountVars(a).join(" "));
+      break;
+    default:
+      console.error("account.ts: unknown command");
+      process.exitCode = 2;
+  }
 }

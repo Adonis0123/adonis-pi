@@ -40,7 +40,7 @@ pi 内核不带 MCP 客户端，官方立场是「用 CLI + skill，或装 exten
 - pi 内 MCP 工具名是 `kimi-cu_get_app_state`，与 Claude Code 的 `mcp__kimi-cu__get_app_state` 不同名，跨宿主 skill 里的工具名只能按语义匹配。
 - `pin setup` 多一步 `pi install`（用户级 npm 包 pi 不会在启动时自动安装）。
 - `figma-rest` 的 `command` 是 `npx`：第一次懒连接要从 npm 下载 Framelink（需要网络，之后走 `~/.npm/_npx` 缓存），每次连接起一个 node 子进程。`pin doctor` 和 startup-check 按 PATH 解析裸命令名，`mcp.json` 里 `env` 引用的变量在 `proxy.env` 里缺失时 doctor 报 WARN、startup-check 把该服务器列为不可用。
-- ADR 0002 规则 1 的一条例外：`lib/config.ts` 里 `KIMI_CU_CANDIDATES` 写了 `/Applications/KimiCU.app/...`。它是 macOS 应用的标准安装位置，不是个人目录布局；Template 本身仍只放占位符，真实路径只落在 Account Layer。
+- ADR 0002 规则 1 的一条例外：`lib/environment.ts` 里 `KIMI_CU_CANDIDATES` 写了 `/Applications/KimiCU.app/...`。它是 macOS 应用的标准安装位置，不是个人目录布局；Template 本身仍只放占位符，真实路径只落在 Account Layer。
 
 ## 何时重新评估
 

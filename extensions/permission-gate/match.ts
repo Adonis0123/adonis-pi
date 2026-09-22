@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
-import { expandTilde, type PermissionGateConfig } from "../../lib/config.ts";
+import type { PermissionGateConfig } from "../../lib/config.ts";
+import { expandTilde } from "../../lib/layout.ts";
 
 export function globToRegExp(glob: string): RegExp {
   const expanded = expandTilde(glob);

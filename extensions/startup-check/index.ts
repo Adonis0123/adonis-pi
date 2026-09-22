@@ -1,29 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { agentDir, configEnvRefs, mcpEnvRefs, missingEnvRefs, processEnvView, readMcpConfig, serverStatus, type McpServerConfig } from "../../lib/config.ts";
+import { agentDir } from "../../lib/layout.ts";
+import { type McpServerConfig, processEnvView, readMcpConfig, serverStatus } from "../../lib/mcp.ts";
+import { accountRefs } from "../../lib/refs.ts";
 import { surface } from "../../lib/session.ts";
 
-
-/** Which files of an account reference environment variables that `env` leaves unset: [file label, missing vars]. */
+/** Which files of an account reference environment variables that `env` leaves unset: [file, missing vars], files in report order. */
 export function missingByFile(dir: string, env: NodeJS.ProcessEnv): [string, string[]][] {
-  const out: [string, string[]][] = [];
-  const models = join(dir, "models.json");
-  if (existsSync(models)) {
-    const m = missingEnvRefs(readFileSync(models, "utf8"), env);
-    if (m.length) out.push(["models.json", m]);
-  }
-  // The effective Config = account file merged over the template, so template defaults such as "$ADONIS_PI_NOTIFY_CMD" count too.
-  const c = configEnvRefs(join(dir, "adonis-pi.json")).filter((v) => !env[v]);
-  if (c.length) out.push(["adonis-pi.json", c]);
-  const mcp = join(dir, "mcp.json");
-  if (existsSync(mcp)) {
-    try {
-      const m = mcpEnvRefs(readMcpConfig(mcp)).filter((v) => !env[v]);
-      if (m.length) out.push(["mcp.json", m]);
-    } catch {} // an unreadable mcp.json is pin doctor's report, not a missing variable
-  }
-  return out;
+  const out = new Map<string, string[]>();
+  for (const r of accountRefs(dir)) if (!env[r.name]) out.set(r.file, [...(out.get(r.file) ?? []), r.name]);
+  return [...out];
 }
 
 /**
@@ -39,7 +26,7 @@ export function mcpBoundarySection(dir: string, env: NodeJS.ProcessEnv = process
   } catch {
     return undefined;
   }
-  // One verdict shared with pin doctor (lib/config.ts serverStatus), read against pi's own environment and PATH.
+  // One verdict shared with pin doctor (lib/mcp.ts serverStatus), read against pi's own environment and PATH.
   const view = { env: processEnvView(env), path: env.PATH };
   const usable = ([, s]: [string, McpServerConfig]) => serverStatus(s, view).usable;
   const entries = Object.entries(servers);

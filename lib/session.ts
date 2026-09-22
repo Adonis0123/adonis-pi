@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { agentDir, ConfigError, loadConfig, loadTemplate, type AdonisPiConfig, type NotifyConfig } from "./config.ts";
+import { ConfigError, loadConfig, loadTemplate, type AdonisPiConfig, type NotifyConfig } from "./config.ts";
+import { agentDir } from "./layout.ts";
 import { buildPayload, decideSettled, sendNotify, sessionRef, type BranchEntry, type SessionRef } from "./notify.ts";
 
 /** What this pi process can do with a human: derived once from ctx, consumed by every Extension. */

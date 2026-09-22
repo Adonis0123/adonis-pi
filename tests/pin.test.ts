@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type Finding, inspectAccount, renderFinding } from "../bin/lib/account.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const PIN = join(ROOT, "bin", "pin");
@@ -33,6 +34,12 @@ function pin(home: string, args: string[], extra: Record<string, string> = {}) {
   const r = spawnSync("sh", [PIN, ...args], { env: env(home, extra), encoding: "utf8" });
   return { code: r.status, out: r.stdout + r.stderr };
 }
+/** What `pin doctor 1` would judge, as Findings (the structure tests assert on; wording stays free). */
+function inspect(home: string, extra: Record<string, string> = {}): Finding[] {
+  return inspectAccount(1, ROOT, { home, env: env(home, extra) });
+}
+const of = (fs: Finding[], subject: string, item?: string) => fs.filter((f) => f.subject === subject && (item === undefined || f.item === item));
+const levels = (fs: Finding[], subject: string, item?: string) => of(fs, subject, item).map((f) => f.level);
 
 test("setup 1 materialises templates into ~/.pi/agent and registers the package", () => {
   const home = mkdtempSync(join(tmpdir(), "pin-home-"));
@@ -109,17 +116,22 @@ test("setup links AGENTS.md when agentsMd is set and refuses to replace a real f
   assert.match(r.out, /AGENTS.md is a regular file/);
 });
 
-test("doctor passes on a fresh setup and fails on a 644 proxy.env", () => {
+test("doctor passes on a fresh setup and fails on a 644 proxy.env; every line is a rendered Finding", () => {
   const home = mkdtempSync(join(tmpdir(), "pin-home-"));
   pin(home, ["setup", "1"]);
   writeFileSync(join(home, ".pi", "agent", "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
   let r = pin(home, ["doctor", "1"]);
   assert.equal(r.code, 0, r.out);
+  const lines = r.out.trimEnd().split("\n");
+  assert.ok(lines.length > 8);
+  for (const l of lines) assert.match(l, /^(OK   |WARN |FAIL )\S/, l);
   assert.doesNotMatch(r.out, /^FAIL/m);
+  assert.match(r.out, /^WARN mcp.json figma-rest -> npx but proxy.env does not set \$FIGMA_API_KEY/m, "subject and item lead the line; the template proxy.env has no Figma key yet");
   chmodSync(join(home, ".pi", "agent", "proxy.env"), 0o644);
   r = pin(home, ["doctor", "1"]);
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 1, "any FAIL is exit 1");
   assert.match(r.out, /^FAIL proxy.env mode/m);
+  assert.equal(renderFinding({ level: "WARN", subject: "mcp.json", item: "ghost", message: "x" }), "WARN mcp.json ghost x");
 });
 
 test("doctor reports template drift as missing keys only, validates adonis-pi.json, and warns on empty env refs", () => {
@@ -128,13 +140,15 @@ test("doctor reports template drift as missing keys only, validates adonis-pi.js
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "", bogus: 1, permissionGate: { mode: "ask" } }));
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, ADAPTER], theme: "light", skills: ["!x"] }, null, 2) + "\n");
-  const r = pin(home, ["doctor", "1"]);
-  assert.match(r.out, /^WARN settings.json drift: missing defaultProvider,missing quietStartup,missing enableInstallTelemetry$/m);
-  assert.doesNotMatch(r.out, /extra/, "user and pi keys in settings.json are not drift");
-  assert.doesNotMatch(r.out, /adonis-pi.json drift/, "adonis-pi.json is merged at runtime, so missing keys are not drift");
-  assert.match(r.out, /^WARN models.json references \$GLM_API_KEY but proxy.env leaves it empty/m);
-  assert.match(r.out, /^FAIL adonis-pi.json invalid: .*unknown key "bogus"/m, "doctor runs the same validator as the extensions");
-  assert.equal(r.code, 1);
+  const fs = inspect(home);
+  const [driftF] = of(fs, "settings.json").filter((f) => f.message.startsWith("drift:"));
+  assert.equal(driftF.level, "WARN");
+  for (const k of ["defaultProvider", "quietStartup", "enableInstallTelemetry"]) assert.match(driftF.message, new RegExp(`missing ${k}`));
+  assert.doesNotMatch(driftF.message, /theme|skills/, "user and pi keys in settings.json are not drift");
+  const fileF = of(fs, "adonis-pi.json").filter((f) => !f.item);
+  assert.deepEqual(fileF.map((f) => f.level), ["FAIL"], "adonis-pi.json is merged at runtime, so missing keys are not drift; the invalid file is");
+  assert.match(fileF[0].message, /unknown key "bogus"/, "doctor runs the same validator as the extensions");
+  assert.deepEqual(levels(fs, "models.json", "$GLM_API_KEY"), ["WARN"]);
 });
 
 test("doctor reports the notifier variable and a stale packages path", () => {
@@ -143,10 +157,10 @@ test("doctor reports the notifier variable and a stale packages path", () => {
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, ADAPTER, "/nonexistent/old-checkout"], lastChangelogVersion: "0.87.0" }, null, 2) + "\n");
-  const r = pin(home, ["doctor", "1"]);
-  assert.match(r.out, /^WARN adonis-pi.json references \$ADONIS_PI_NOTIFY_CMD but proxy.env leaves it empty/m);
-  assert.match(r.out, /^WARN settings.json packages entry \/nonexistent\/old-checkout does not exist on disk/m);
-  assert.equal(r.code, 0);
+  const fs = inspect(home);
+  assert.deepEqual(levels(fs, "adonis-pi.json", "$ADONIS_PI_NOTIFY_CMD"), ["WARN"]);
+  assert.ok(of(fs, "settings.json").some((f) => f.level === "WARN" && f.message.includes("/nonexistent/old-checkout")));
+  assert.equal(fs.some((f) => f.level === "FAIL"), false);
 });
 
 test("doctor fails when settings.json lacks the packages entry (Review Focus 5)", () => {
@@ -154,9 +168,8 @@ test("doctor fails when settings.json lacks the packages entry (Review Focus 5)"
   pin(home, ["setup", "1"]);
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [], note: ROOT }, null, 2)); // path present elsewhere must not count
-  const r = pin(home, ["doctor", "1"]);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /^FAIL settings.json packages lacks/m);
+  const fs = inspect(home);
+  assert.ok(of(fs, "settings.json").some((f) => f.level === "FAIL" && f.message.includes(ROOT)));
 });
 
 test("doctor pins the MCP Bridge: missing entry, other version, or a different installed version all FAIL", () => {
@@ -164,16 +177,17 @@ test("doctor pins the MCP Bridge: missing entry, other version, or a different i
   pin(home, ["setup", "1"]);
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
-  assert.match(pin(home, ["doctor", "1"]).out, /^OK   settings.json packages pins npm:pi-mcp-adapter@2\.36\.0\nOK   pi-mcp-adapter 2\.36\.0 installed$/m);
+  let fs = inspect(home);
+  assert.ok(of(fs, "settings.json").some((f) => f.level === "OK" && f.message.includes(ADAPTER)));
+  assert.deepEqual(of(fs, "pi-mcp-adapter").map((f) => [f.level, f.message]), [["OK", "2.36.0 installed"]]);
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, "npm:pi-mcp-adapter"] }, null, 2));
-  let r = pin(home, ["doctor", "1"]);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /^FAIL settings.json packages has npm:pi-mcp-adapter; expected exactly npm:pi-mcp-adapter@2\.36\.0/m);
+  fs = inspect(home);
+  assert.ok(of(fs, "settings.json").some((f) => f.level === "FAIL" && /npm:pi-mcp-adapter;.*expected exactly npm:pi-mcp-adapter@2\.36\.0/.test(f.message)));
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [ROOT, ADAPTER] }, null, 2));
   writeFileSync(join(agent, "npm", "node_modules", "pi-mcp-adapter", "package.json"), JSON.stringify({ name: "pi-mcp-adapter", version: "2.35.0" }));
-  r = pin(home, ["doctor", "1"]);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /^FAIL pi-mcp-adapter 2\.35\.0 installed, template pins 2\.36\.0/m);
+  fs = inspect(home);
+  assert.deepEqual(levels(fs, "pi-mcp-adapter"), ["FAIL"]);
+  assert.match(of(fs, "pi-mcp-adapter")[0].message, /2\.35\.0.*2\.36\.0/);
 });
 
 test("setup without KimiCU keeps the placeholder and doctor reports it; a wrong command path also FAILs", () => {
@@ -182,19 +196,19 @@ test("setup without KimiCU keeps the placeholder and doctor reports it; a wrong 
   assert.match(r.out, /KimiCU not found/);
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
-  let d = pin(home, ["doctor", "1"]);
-  assert.equal(d.code, 1);
-  assert.match(d.out, /^FAIL mcp.json kimi-cu command is still \{\{KIMI_CU_BIN\}\}/m);
+  let fs = inspect(home);
+  assert.deepEqual(levels(fs, "mcp.json", "kimi-cu"), ["FAIL"]);
+  assert.match(of(fs, "mcp.json", "kimi-cu")[0].message, /\{\{KIMI_CU_BIN\}\}/);
   const mcp = JSON.parse(readFileSync(join(agent, "mcp.json"), "utf8"));
   mcp.mcpServers["kimi-cu"].command = "/nonexistent/kimi-cu";
   writeFileSync(join(agent, "mcp.json"), JSON.stringify(mcp, null, 2));
-  d = pin(home, ["doctor", "1"]);
-  assert.match(d.out, /^FAIL mcp.json kimi-cu command \/nonexistent\/kimi-cu is not an executable file/m);
+  fs = inspect(home);
+  assert.deepEqual(of(fs, "mcp.json", "kimi-cu").map((f) => [f.level, f.message]), [["FAIL", "command /nonexistent/kimi-cu is not an executable file"]]);
   mcp.mcpServers["kimi-cu"].disabled = true;
   writeFileSync(join(agent, "mcp.json"), JSON.stringify(mcp, null, 2));
-  d = pin(home, ["doctor", "1"]);
-  assert.equal(d.code, 0, d.out);
-  assert.match(d.out, /^OK   mcp.json kimi-cu disabled$/m);
+  fs = inspect(home);
+  assert.deepEqual(of(fs, "mcp.json", "kimi-cu").map((f) => [f.level, f.message]), [["OK", "disabled"]]);
+  assert.equal(fs.some((f) => f.level === "FAIL"), false);
 });
 
 test("doctor resolves bare commands on PATH and checks mcp.json env references against proxy.env", () => {
@@ -203,52 +217,55 @@ test("doctor resolves bare commands on PATH and checks mcp.json env references a
   const agent = join(home, ".pi", "agent");
   writeFileSync(join(agent, "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
   const proxy = join(agent, "proxy.env");
+  const server = (fs: Finding[]) => of(fs, "mcp.json", "figma-rest").map((f) => [f.level, f.message] as const);
   writeFileSync(proxy, "export GLM_API_KEY=abc\n");
   chmodSync(proxy, 0o600);
-  let d = pin(home, ["doctor", "1"]);
-  assert.equal(d.code, 0, d.out);
-  assert.match(d.out, /^WARN mcp.json references \$FIGMA_API_KEY but proxy.env leaves it empty$/m);
-  assert.match(d.out, /^WARN mcp.json figma-rest -> npx but proxy.env does not set \$FIGMA_API_KEY \(unavailable until it does\)$/m, "the server line says unavailable, matching startup-check");
+  let fs = inspect(home);
+  assert.equal(fs.some((f) => f.level === "FAIL"), false);
+  assert.deepEqual(levels(fs, "mcp.json", "$FIGMA_API_KEY"), ["WARN"]);
+  assert.deepEqual(server(fs).map(([l]) => l), ["WARN"]);
+  assert.match(server(fs)[0][1], /unavailable/, "the server line says unavailable, matching startup-check");
   writeFileSync(proxy, 'export GLM_API_KEY=abc\nexport FIGMA_API_KEY=""\n');
-  d = pin(home, ["doctor", "1"]);
-  assert.match(d.out, /^WARN mcp.json references \$FIGMA_API_KEY but proxy.env leaves it empty$/m, "an empty quoted value is empty");
+  fs = inspect(home);
+  assert.deepEqual(levels(fs, "mcp.json", "$FIGMA_API_KEY"), ["WARN"], "an empty quoted value is empty");
   writeFileSync(proxy, "export GLM_API_KEY=abc\nexport FIGMA_API_KEY=figd_test\n");
-  d = pin(home, ["doctor", "1"]);
-  assert.match(d.out, /^OK   mcp.json \$FIGMA_API_KEY provided$/m);
-  assert.match(d.out, /^OK   mcp.json figma-rest -> npx \(env: \$FIGMA_API_KEY\)$/m);
-  assert.doesNotMatch(d.out, /figd_test/, "doctor never prints values");
+  fs = inspect(home);
+  assert.deepEqual(levels(fs, "mcp.json", "$FIGMA_API_KEY"), ["OK"]);
+  assert.deepEqual(server(fs), [["OK", "-> npx (env: $FIGMA_API_KEY)"]]);
+  assert.doesNotMatch(JSON.stringify(fs), /figd_test/, "doctor never carries values");
   const mcp = JSON.parse(readFileSync(join(agent, "mcp.json"), "utf8"));
   writeFileSync(proxy, "export GLM_API_KEY=abc\nexport FIGMA_API_KEY=$FROM_ELSEWHERE\n");
-  d = pin(home, ["doctor", "1"]);
-  assert.match(d.out, /^WARN mcp.json \$FIGMA_API_KEY is computed when proxy.env is sourced; doctor cannot check it/m, "shell expansion is reported as unknown, not as provided or empty");
-  assert.match(d.out, /^WARN mcp.json figma-rest -> npx; availability depends on \$FIGMA_API_KEY, which doctor cannot evaluate$/m);
+  fs = inspect(home);
+  assert.deepEqual(levels(fs, "mcp.json", "$FIGMA_API_KEY"), ["WARN"], "shell expansion is reported as unknown, not as provided or empty");
+  assert.match(of(fs, "mcp.json", "$FIGMA_API_KEY")[0].message, /cannot check/);
+  assert.deepEqual(server(fs).map(([l]) => l), ["WARN"]);
+  assert.match(server(fs)[0][1], /cannot evaluate/);
   writeFileSync(proxy, "export GLM_API_KEY=abc\nexport FIGMA_API_KEY=figd_test\n");
   mcp.mcpServers["figma-rest"].env.EXTRA = "$HOME";
   writeFileSync(join(agent, "mcp.json"), JSON.stringify(mcp, null, 2));
-  d = pin(home, ["doctor", "1"]);
-  assert.match(d.out, /^WARN mcp.json figma-rest has bare \$HOME; the MCP Bridge sends that literally — if a variable was meant, write \$\{HOME\}$/m);
-  assert.match(d.out, /^OK   mcp.json figma-rest -> npx \(env: \$FIGMA_API_KEY\)$/m, "a bare $VAR warns but does not make the server unavailable (it may be a deliberate literal)");
+  fs = inspect(home);
+  assert.deepEqual(server(fs).map(([l]) => l), ["WARN", "OK"], "a bare $VAR warns but does not make the server unavailable (it may be a deliberate literal)");
+  assert.match(server(fs)[0][1], /bare \$HOME.*\$\{HOME\}/);
   delete mcp.mcpServers["figma-rest"].env.EXTRA;
   mcp.mcpServers["figma-rest"].command = "no-such-command-xyz";
   mcp.mcpServers.ghost = {};
   mcp.mcpServers.remote = { url: "https://user:secret@mcp.example.com/mcp?token=abc123" };
   writeFileSync(join(agent, "mcp.json"), JSON.stringify(mcp, null, 2));
-  d = pin(home, ["doctor", "1"]);
-  assert.equal(d.code, 1);
-  assert.match(d.out, /^FAIL mcp.json figma-rest command no-such-command-xyz is not an executable on PATH$/m);
-  assert.match(d.out, /^WARN mcp.json ghost has neither command nor url \(unavailable\)$/m);
-  assert.match(d.out, /^OK   mcp.json remote -> https:\/\/mcp.example.com\/mcp \(credentials\/query hidden\)$/m);
-  assert.doesNotMatch(d.out, /secret|abc123/, "urls are redacted before printing");
+  fs = inspect(home);
+  assert.deepEqual(server(fs), [["FAIL", "command no-such-command-xyz is not an executable on PATH"]]);
+  assert.deepEqual(levels(fs, "mcp.json", "ghost"), ["WARN"]);
+  assert.deepEqual(of(fs, "mcp.json", "remote").map((f) => [f.level, f.message]), [["OK", "-> https://mcp.example.com/mcp (credentials/query hidden)"]]);
+  assert.doesNotMatch(JSON.stringify(fs), /secret|abc123/, "urls are redacted before they reach a Finding");
 });
 
 test("doctor reports the pi version: OK on 0.87.x, WARN on anything else", () => {
   const home = mkdtempSync(join(tmpdir(), "pin-home-"));
   pin(home, ["setup", "1"]);
   writeFileSync(join(home, ".pi", "agent", "adonis-pi.json"), JSON.stringify({ agentsMd: "" }));
-  assert.match(pin(home, ["doctor", "1"]).out, /^OK   pi 0\.87\.0 on PATH/m);
-  const r = pin(home, ["doctor", "1"], { FAKE_PI_VERSION: "0.88.0" });
-  assert.equal(r.code, 0);
-  assert.match(r.out, /^WARN pi 0\.88\.0 differs from the tested 0\.87\.x/m);
+  assert.deepEqual(of(inspect(home), "pi").map((f) => [f.level, f.message.split(" on PATH")[0]]), [["OK", "0.87.0"]]);
+  const fs = inspect(home, { FAKE_PI_VERSION: "0.88.0" });
+  assert.deepEqual(levels(fs, "pi"), ["WARN"]);
+  assert.match(of(fs, "pi")[0].message, /0\.88\.0/);
 });
 
 test("launch sources proxy.env, exports PI_CODING_AGENT_DIR and execs pi with args", () => {

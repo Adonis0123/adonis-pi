@@ -43,4 +43,5 @@ Account 超过 3 个，或某个 Account Layer 文件被证明在所有账号里
 ## 补充（2026-09-22 架构评审）
 
 - 规则 3 的边界：`startup-check` 与 `pin doctor` 只检查 Config 和 `models.json` 引用的 `$VAR` **是否存在**于环境，用来提示「没经 `pin` 启动」，不读取值；这不算 Extension 读密钥。
-- 规则 2 从人工约定变成机械保证：Launcher 的 setup/doctor 由 `bin/lib/account.ts` 实现，它直接 import `lib/config.ts` 的布局、Template 列表与 `$VAR` 语法，sh 侧不再保留副本。
+- 规则 2 从人工约定变成机械保证：Launcher 的 setup/doctor 由 `bin/lib/account.ts` 实现，它直接 import `lib/` 里的布局、Template 列表与 `$VAR` 语法，sh 侧不再保留副本。
+- 规则 3 从注释变成 import 图（2026-09-22 晚拆分 `lib/`）：`lib/layout.ts`（布局与锁版常量）、`lib/config.ts`（Config 加载与校验）、`lib/mcp.ts`（MCP Config、Bridge 引用语法、Server Status）、`lib/refs.ts`（Env Ref）是 Extension 可以 import 的全部；`lib/environment.ts`（`proxy.env` 静态解析、KimiCU 探测）只有 `bin/lib/account.ts` import。`tests/scaffold.test.ts` 检查 `extensions/` 与其余 `lib/` 没有一处 import `environment.ts` 或 `bin/`。

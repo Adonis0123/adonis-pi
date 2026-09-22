@@ -26,10 +26,12 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 - **Template**：Repo Layer 里对某个 Account Layer 文件的模板。`pin setup` 在文件不存在时复制它；已存在时永不覆盖。
 - **Drift（漂移）**：某个 Account Layer 文件与它的 Template 在结构上不一致。`pin doctor` 报告 Drift，由人决定是否对齐。
 - **Config（扩展配置）**：Account Layer 里的 `adonis-pi.json`，是所有 Extension 唯一的配置入口。值可以用 `$VAR` 引用环境变量，和 pi 自身 `models.json` 的写法一致。
+- **Env Ref（变量引用）**：Account Layer 文件里对某个环境变量的一次引用，记为「哪个文件、哪个变量」。两种写法：pi 写法（`models.json` 与 Config 里整串的 `$VAR` / `${VAR}`）和 MCP Bridge 写法（MCP Config 里嵌在字串中的 `${VAR}` / `$env:VAR` / `{env:VAR}`）。一个账号引用了什么只算一次，`pin doctor`、启动检查和 `pin --dry-run` 各自对照自己的真相来源。
 
 ## 入口
 
 - **Launcher（入口）**：`pin` 命令。`pin <n>` 启动第 n 号 Account 的 pi；`pin setup <n>` 把 Template 物化到该 Account；`pin doctor <n>` 体检。
+- **Finding（体检结论）**：`pin doctor` 的一条结论：级别（OK / WARN / FAIL）、对象（某个 Account Layer 文件，或 pi、MCP Bridge 本身）、可选的细项（某个 MCP Server、某个变量、某个包）和说明。doctor 先得出全部 Finding，再逐条打印；任何 FAIL 让 doctor 以 1 退出。
 - **acc**：机器上已有的跨家族账号维护命令。pi 家族接入 acc 时，acc 委托 `pin`，不重复实现。
 
 ## 能力（第一阶段）
