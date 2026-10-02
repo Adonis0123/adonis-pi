@@ -9,7 +9,7 @@ export interface PermissionGateConfig {
   mode: "ask" | "block" | "off";
   denyCommands: string[];
   protectedPaths: string[];
-  /** Globs on MCP tool names as the MCP Bridge registers them (`<server>_<tool>`): direct tools by their own name, proxy calls by the `tool` argument of the `mcp` meta-tool. */
+  /** Globs on MCP tool names as pi's built-in MCP Client registers them (`mcp__<server>__<tool>`, every character outside [A-Za-z0-9_] written as `_`); see DENY_TOOL_RULE. */
   denyTools: string[];
 }
 export interface NotifyConfig {
@@ -117,6 +117,26 @@ function expectType(path: string, value: unknown, type: "string" | "boolean" | "
   if (!ok) throw new ConfigError(`${path} must be ${type}`);
 }
 
+/** The only denyTools form: a glob that can match some MCP Client tool name, i.e. after `mcp__` a `*` or the `__` before the tool. Mirrored by the item pattern in config.schema.json. */
+export const DENY_TOOL_RULE = /^mcp__(?=[A-Za-z0-9_*]*(\*|[A-Za-z0-9]__))[A-Za-z0-9_*]+$/;
+/** Server names in this repo's Templates that contain a separator, so an old `<server>_<tool>` rule splits after them. */
+const COMPOUND_SERVERS = ["kimi-cu", "kimi_cu", "figma-rest", "figma_rest"];
+
+/** Best-effort rewrite of a rejected denyTools rule (e.g. a pi-mcp-adapter-era `figma_use_figma`) into the MCP Client form. */
+export function suggestDenyToolRule(rule: string): string {
+  const clean = (s: string) => s.replace(/[^A-Za-z0-9_*]/g, "_");
+  if (rule === "mcp__") return "mcp__*";
+  if (rule.startsWith("mcp__")) {
+    const c = clean(rule);
+    return DENY_TOOL_RULE.test(c) ? c : suggestDenyToolRule(rule.slice("mcp__".length));
+  }
+  if (rule === "mcp" || /^\*+$/.test(rule)) return "mcp__*";
+  const compound = COMPOUND_SERVERS.find((s) => rule.startsWith(`${s}_`));
+  const cut = compound ? compound.length : rule.indexOf("_");
+  if (cut < 0) return `mcp__${clean(rule)}__*`;
+  return `mcp__${clean(rule.slice(0, cut))}__${clean(rule.slice(cut + 1))}`;
+}
+
 function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConfig {
   rejectUnknownKeys(template, raw);
   expectType("agentsMd", raw.agentsMd, "string");
@@ -126,6 +146,13 @@ function validate(raw: Json, template: Json): asserts raw is Json & AdonisPiConf
   expectType("permissionGate.denyCommands", pg.denyCommands, "string[]");
   expectType("permissionGate.protectedPaths", pg.protectedPaths, "string[]");
   expectType("permissionGate.denyTools", pg.denyTools, "string[]");
+  for (const rule of pg.denyTools as string[]) {
+    if (!DENY_TOOL_RULE.test(rule)) {
+      throw new ConfigError(
+        `permissionGate.denyTools rule "${rule}" is not an MCP tool name glob: pi's MCP Client names tools mcp__<server>__<tool> (characters outside A-Za-z0-9_ become _, e.g. kimi-cu → kimi_cu); rewrite it as "${suggestDenyToolRule(rule)}"`,
+      );
+    }
+  }
   for (const re of pg.denyCommands as string[]) {
     try {
       new RegExp(re);

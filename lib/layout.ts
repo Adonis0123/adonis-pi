@@ -28,10 +28,13 @@ export type TemplatedFile = (typeof TEMPLATED_FILES)[number];
 export const TEMPLATES_DIR = fileURLToPath(new URL("../templates/", import.meta.url));
 export const TEMPLATE_PATH = join(TEMPLATES_DIR, "adonis-pi.json");
 
-/** The MCP Bridge (ADR 0003), pinned: `pi update --all` skips versioned specs, so upgrades are a Template change reported by `pin doctor`. */
+/** The retired third-party MCP Bridge (ADR 0003, superseded by ADR 0004): installed, it replaces pi's built-in MCP Client, so `pin doctor` fails on it. */
 export const MCP_ADAPTER_NAME = "pi-mcp-adapter";
-export const MCP_ADAPTER_VERSION = "2.36.0";
-export const MCP_ADAPTER_PACKAGE = `npm:${MCP_ADAPTER_NAME}@${MCP_ADAPTER_VERSION}`;
+/** The `extensions` entry that turns pi's built-in MCP Client off. */
+export const BUILTIN_MCP_OFF = "-builtin:mcp";
+/** The oldest pi whose built-in MCP Client has everything the Template uses (exposure, timeout, oauth.clientName). */
+export const PI_MIN_VERSION = "0.99.2";
+export const PI_TESTED_MINOR = "1.0.";
 
 /** Placeholder in templates/mcp.json for the KimiCU executable; `pin setup` replaces it (the Repo Layer holds no machine paths). */
 export const KIMI_CU_PLACEHOLDER = "{{KIMI_CU_BIN}}";

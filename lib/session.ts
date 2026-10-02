@@ -57,11 +57,10 @@ export function decideNotification(h: Happened, notify: NotifyConfig, ref: Sessi
   }
 }
 
-/** The one field of a gated call worth sending to the Notifier: the shell command, the file path, or the MCP tool name. */
+/** The one field of a gated call worth sending to the Notifier: the shell command or the file path. An MCP tool travels as tool_name alone. */
 function permissionSummary(input: Record<string, unknown>): Record<string, string> {
   if (typeof input.command === "string") return { command: input.command.slice(0, 200) };
   if (typeof input.path === "string") return { path: input.path };
-  if (typeof input.tool === "string") return { tool: input.tool };
   return {};
 }
 

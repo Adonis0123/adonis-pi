@@ -1,6 +1,6 @@
 # ADR 0003: MCP 走 pi-mcp-adapter，chrome-devtools 沿用 CLI Facade，Figma 不借身份
 
-日期：2026-09-22 · 状态：已接受
+日期：2026-09-22 · 状态：已被 [ADR 0004](0004-mcp-builtin-client.md) 取代
 
 ## 背景
 

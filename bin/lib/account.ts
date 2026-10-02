@@ -4,15 +4,16 @@
 //   account.ts doctor <n> <pinRoot>    OK/WARN/FAIL report; exit 1 on any FAIL
 //   account.ts vars <agentDir>         env var names the account references or its proxy.env exports (for pin --dry-run)
 // doctor is `inspectAccount` (structured Findings, what tests call) plus one line of rendering; only the CLI prints.
-// Layout, Template list, `$VAR` grammar and the Server Status verdict come from lib/, so the launcher and the extensions agree.
+// Layout, Template list, `$VAR` grammar, adapter leftovers and the Server Status verdict come from lib/, so the launcher and
+// the extensions agree. MCP is pi's built-in MCP Client (ADR 0004); doctor stays static and never runs `pi mcp list`.
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../../lib/config.ts";
 import { type ProxyEnv, proxyEnvState, proxyEnvView, resolveKimiCuBin } from "../../lib/environment.ts";
-import { accountAgentDir, expandTilde, KIMI_CU_PLACEHOLDER, MCP_ADAPTER_NAME, MCP_ADAPTER_PACKAGE, MCP_ADAPTER_VERSION, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/layout.ts";
-import { mcpBareRefs, readMcpConfig, resolveCommand, serverStatus } from "../../lib/mcp.ts";
+import { accountAgentDir, BUILTIN_MCP_OFF, expandTilde, KIMI_CU_PLACEHOLDER, MCP_ADAPTER_NAME, PI_MIN_VERSION, PI_TESTED_MINOR, TEMPLATED_FILES, TEMPLATES_DIR } from "../../lib/layout.ts";
+import { borrowedClientName, mcpConfigLeftovers, mcpNameConflicts, mcpServerLeftovers, preRegisteredClientId, readMcpConfig, resolveCommand, serverStatus } from "../../lib/mcp.ts";
 import { accountRefs } from "../../lib/refs.ts";
 
 type Json = Record<string, unknown>;
@@ -63,16 +64,10 @@ function redactUrl(url: string): string {
   }
 }
 
-/** The MCP Bridge as pi installed it under <agentDir>/npm, or undefined. */
-function installedAdapter(agentDir: string): { dir: string; version: string } | undefined {
+/** Where an earlier `pi install` left the retired pi-mcp-adapter under <agentDir>/npm, or undefined. */
+function installedAdapter(agentDir: string): string | undefined {
   const dir = join(agentDir, "npm", "node_modules", MCP_ADAPTER_NAME);
-  const pkg = join(dir, "package.json");
-  if (!existsSync(pkg)) return undefined;
-  try {
-    return { dir, version: String(readJson(pkg).version ?? "") };
-  } catch {
-    return { dir, version: "" };
-  }
+  return existsSync(dir) ? dir : undefined;
 }
 
 /** The `npm:pi-mcp-adapter…` entries in settings.json packages (any version). */
@@ -80,9 +75,58 @@ function adapterEntries(packages: string[]): string[] {
   return packages.filter((p) => p === `npm:${MCP_ADAPTER_NAME}` || p.startsWith(`npm:${MCP_ADAPTER_NAME}@`));
 }
 
-function packagesOf(settingsPath: string): string[] {
-  const j = readJson(settingsPath);
-  return Array.isArray(j.packages) ? (j.packages as string[]) : [];
+const stringsAt = (j: Json, key: string): string[] => (Array.isArray(j[key]) ? (j[key] as unknown[]).filter((v): v is string => typeof v === "string") : []);
+/** settings.json `packages` sources: pi loads a string entry and an object entry's `source` alike (core/package-manager.js). */
+const packageSources = (j: Json): string[] =>
+  Array.isArray(j.packages) ? (j.packages as unknown[]).flatMap((v) => (typeof v === "string" ? [v] : isObj(v) && typeof v.source === "string" ? [v.source] : [])) : [];
+
+/** A minimatch-style glob (`*`, `?`, `{a,b}`, `[…]`) as a whole-string RegExp; enough for matching the one name `builtin:mcp`. */
+function globRe(glob: string): RegExp {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else if (c === "[") {
+      const end = glob.indexOf("]", i + 1);
+      if (end < 0) re += "\\[";
+      else {
+        re += `[${glob.slice(i + 1, end).replace(/^!/, "^")}]`;
+        i = end;
+      }
+    } else if (c === "{") {
+      const end = glob.indexOf("}", i + 1);
+      if (end < 0) re += "\\{";
+      else {
+        re += `(?:${glob.slice(i + 1, end).split(",").map((alt) => alt.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, "[^/]*")).join("|")})`;
+        i = end;
+      }
+    } else re += c.replace(/[.+^$()|\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Whether the user `extensions` setting leaves pi's built-in MCP Client on, as pi 1.0.0 decides it
+ * (core/package-manager.js isEnabledByOverrides): `!glob` excludes by pattern, then `+builtin:mcp` forces it on, then
+ * `-builtin:mcp` forces it off. Returns the entries that turn it off, or [] when it stays on. A project-level
+ * `.pi/settings.json` can override this per project; doctor does not read projects.
+ */
+export function builtinMcpOffBy(extensions: string[]): string[] {
+  const name = "builtin:mcp";
+  const excl = extensions.filter((e) => e.startsWith("!") && globRe(e.slice(1)).test(name));
+  const forceOn = extensions.includes(`+${name}`);
+  const forceOff = extensions.filter((e) => e === BUILTIN_MCP_OFF);
+  if (forceOff.length) return forceOff;
+  return forceOn ? [] : excl;
+}
+
+/** -1, 0 or 1 comparing two `major.minor.patch` versions numerically (no prerelease tags: doctor only reads `\d+.\d+.\d+`). */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) ? -1 : 1;
+  return 0;
 }
 
 /** Add `pkg` to settings.json `packages`, keeping the file's indentation and other keys. */
@@ -141,24 +185,8 @@ function setup(n: number, pinRoot: string): void {
   }
   // chmod is the one thing setup changes on an existing file: a readable proxy.env is a leak, not a preference.
   if ((statSync(proxy).mode & 0o777) !== 0o600) chmodSync(proxy, 0o600);
+  // MCP needs no package: pi's built-in MCP Client reads mcp.json. An old pi-mcp-adapter entry is doctor's FAIL, not setup's to remove.
   console.log(`packages: ${addPackage(join(d, "settings.json"), pinRoot)}`);
-  console.log(`packages: ${MCP_ADAPTER_PACKAGE} ${addPackage(join(d, "settings.json"), MCP_ADAPTER_PACKAGE)}`);
-  // pi installs user-level npm packages only through `pi install`, never on startup; run it once so the Bridge exists.
-  const adapter = installedAdapter(d);
-  if (adapter?.version === MCP_ADAPTER_VERSION) console.log(`keep  ${adapter.dir} (${adapter.version})`);
-  else if (process.env.PIN_SKIP_INSTALL === "1") console.log(`note  ${MCP_ADAPTER_NAME} ${adapter?.version ?? "not installed"}; install skipped (PIN_SKIP_INSTALL)`);
-  else {
-    const pi = resolveCommand("pi");
-    if (!pi) console.log(`note  pi not on PATH; run later: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE}`);
-    else {
-      try {
-        execFileSync(pi, ["install", MCP_ADAPTER_PACKAGE], { env: { ...process.env, PI_CODING_AGENT_DIR: d }, stdio: "inherit" });
-        console.log(`install ${MCP_ADAPTER_PACKAGE} -> ${installedAdapter(d)?.dir ?? "(location unknown; see pin doctor)"}`);
-      } catch (e) {
-        console.log(`note  pi install failed (${(e as Error).message}); run later: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE}`);
-      }
-    }
-  }
   const cfgPath = join(d, "adonis-pi.json");
   let agentsMd = "";
   try {
@@ -188,7 +216,8 @@ function setup(n: number, pinRoot: string): void {
 
 /**
  * One doctor conclusion (CONTEXT.md "Finding"). `subject` is the Account Layer file or component judged ("settings.json",
- * "proxy.env", "pi", "pi-mcp-adapter", "account"); `item` narrows it to one MCP Server name, `$VAR` or package spec.
+ * "models.json", "adonis-pi.json", "mcp.json", "proxy.env", "AGENTS.md", "pi", "pi-mcp-adapter" for a leftover install,
+ * "account"); `item` narrows it to one MCP Server name, `$VAR` or package spec.
  * `message` never carries a value from proxy.env or a url with its query.
  */
 export type Level = "OK" | "WARN" | "FAIL";
@@ -260,36 +289,41 @@ export function inspectAccount(n: number, pinRoot: string, opts: { home?: string
   } else add("WARN", "proxy.env", "missing (API providers will not authenticate)");
   const settings = join(d, "settings.json");
   if (existsSync(settings)) {
-    const packages = packagesOf(settings);
+    const sj = readJson(settings);
+    const packages = packageSources(sj);
     if (packages.includes(pinRoot)) add("OK", "settings.json", `packages includes ${pinRoot}`);
     else add("FAIL", "settings.json", `packages lacks ${pinRoot} (run: pin setup ${n})`);
     for (const p of packages) if (p.startsWith("/") && !existsSync(p)) add("WARN", "settings.json", `packages entry ${p} does not exist on disk`);
+    // pi-mcp-adapter registers /mcp, which replaces pi's built-in MCP Client: pi then ignores mcp.json in sessions (ADR 0004).
     const entries = adapterEntries(packages);
-    if (entries.length === 1 && entries[0] === MCP_ADAPTER_PACKAGE) add("OK", "settings.json", `packages pins ${MCP_ADAPTER_PACKAGE}`);
-    else if (entries.length === 0) add("FAIL", "settings.json", `packages lacks ${MCP_ADAPTER_PACKAGE} (run: pin setup ${n})`);
-    else add("FAIL", "settings.json", `packages has ${entries.join(", ")}; expected exactly ${MCP_ADAPTER_PACKAGE} (edit settings.json, then: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
-    const adapter = installedAdapter(d);
-    if (!adapter) add("FAIL", MCP_ADAPTER_NAME, `not installed under ${join(d, "npm")} (run: pin setup ${n})`);
-    else if (adapter.version === MCP_ADAPTER_VERSION) add("OK", MCP_ADAPTER_NAME, `${adapter.version} installed`);
-    else add("FAIL", MCP_ADAPTER_NAME, `${adapter.version || "?"} installed, template pins ${MCP_ADAPTER_VERSION} (run: PI_CODING_AGENT_DIR=${d} pi install ${MCP_ADAPTER_PACKAGE})`);
+    for (const spec of entries) add("FAIL", "settings.json", `packages loads the retired MCP bridge, which replaces pi's built-in MCP Client (run: PI_CODING_AGENT_DIR=${d} pi remove ${spec})`, spec);
+    for (const e of builtinMcpOffBy(stringsAt(sj, "extensions"))) add("FAIL", "settings.json", `extensions has "${e}", which turns pi's built-in MCP Client off (remove that entry)`, e);
+    const leftover = installedAdapter(d);
+    if (leftover && entries.length === 0) add("WARN", MCP_ADAPTER_NAME, `left installed at ${leftover}; no packages entry loads it, so pi ignores it (delete the directory to tidy up)`);
   }
   const mcpPath = join(d, "mcp.json");
   if (existsSync(mcpPath)) {
     try {
-      const servers = readMcpConfig(mcpPath).mcpServers;
+      const cfg = readMcpConfig(mcpPath);
       const view = { env: proxyEnvView(envState), path: env.PATH };
-      for (const [name, srv] of Object.entries(servers)) {
-        // A whole-string "$VAR" may be a mis-written reference (the Bridge sends it literally) or a deliberate literal: warn, never disable.
-        const bare = mcpBareRefs(srv);
-        if (bare.length) add("WARN", "mcp.json", `has bare ${bare.map((v) => `$${v}`).join(", ")}; the MCP Bridge sends that literally — if a variable was meant, write ${bare.map((v) => `\${${v}}`).join(", ")}`, name);
-        // The Server Status verdict (lib/mcp.ts), phrased. PATH is this shell's; a proxy.env that changes PATH is not modelled.
-        const st = serverStatus(srv, view);
-        const shown = (target: string) => (srv.command === undefined ? redactUrl(target) : target);
-        if (st.usable) add("OK", "mcp.json", `-> ${shown(st.target)}${st.refs.length ? ` (env: ${st.refs.map((v) => `$${v}`).join(", ")})` : ""}`, name);
+      // pi silently ignores what only the retired adapter understood (a `disabled` server would connect): each leftover FAILs.
+      for (const l of mcpConfigLeftovers(cfg)) add("FAIL", "mcp.json", l);
+      for (const [later, first] of mcpNameConflicts(cfg)) add("FAIL", "mcp.json", `is the same server as "${first}" to pi (- and _ are equal); pi keeps "${first}" and rejects this one (rename or remove it)`, later);
+      for (const [name, srv] of Object.entries(cfg.mcpServers)) {
+        for (const l of mcpServerLeftovers(srv)) add("FAIL", "mcp.json", l, name);
+        const borrowed = borrowedClientName(srv);
+        if (borrowed !== undefined) add("FAIL", "mcp.json", `oauth.clientName "${borrowed}" borrows another client's identity; remove oauth.clientName so pi registers as itself (ADR 0004)`, name);
+        if (preRegisteredClientId(srv) !== undefined) add("WARN", "mcp.json", "uses a pre-registered oauth.clientId; keep it only if you registered that client yourself, never another host's (ADR 0004)", name);
+        // The Server Status verdict (lib/mcp.ts), phrased; leftovers above do not suppress it. PATH is this shell's; a proxy.env that changes PATH is not modelled.
+        const st = serverStatus(srv, view, name);
+        const shown = (target: string) => (target === srv.url ? redactUrl(target) : target);
+        const envNote = (refs: string[]) => (refs.length ? ` (env: ${refs.map((v) => `$${v}`).join(", ")})` : "");
+        if (st.usable && st.computed) add("WARN", "mcp.json", `-> ${shown(st.target)}${envNote(st.refs)}; a !command value is computed when the server connects; doctor cannot check it (run: pin ${n} mcp list)`, name);
+        else if (st.usable) add("OK", "mcp.json", `-> ${shown(st.target)}${envNote(st.refs)}`, name);
         else if (st.kind === "disabled") add("OK", "mcp.json", "disabled", name);
         else if (st.kind === "placeholder") add("FAIL", "mcp.json", `command is still ${KIMI_CU_PLACEHOLDER} (install KimiCU or set ADONIS_PI_KIMI_CU_BIN, then edit mcp.json)`, name);
         else if (st.kind === "command-unresolved") add("FAIL", "mcp.json", `command ${st.command} ${describeUnresolved(st.command)}`, name);
-        else if (st.kind === "no-target") add("WARN", "mcp.json", "has neither command nor url (unavailable)", name);
+        else if (st.kind === "invalid") add("FAIL", "mcp.json", `${st.reason}; pi rejects the entry (unavailable)`, name);
         else if (st.kind === "env-empty") add("WARN", "mcp.json", `-> ${shown(st.target)} but proxy.env does not set ${st.vars.map((v) => `$${v}`).join(", ")} (unavailable until it does)`, name);
         else add("WARN", "mcp.json", `-> ${shown(st.target)}; availability depends on ${st.vars.map((v) => `$${v}`).join(", ")}, which doctor cannot evaluate`, name);
       }
@@ -307,15 +341,17 @@ export function inspectAccount(n: number, pinRoot: string, opts: { home?: string
     add("WARN", "AGENTS.md", "not linked (agentsMd empty?)");
   }
   const pi = resolveCommand("pi", env);
-  if (!pi) add("FAIL", "pi", "not on PATH (npm install -g @earendil-works/pi-coding-agent@0.87.0)");
+  const piInstall = "npm install -g @earendil-works/pi-coding-agent@1.0.0";
+  if (!pi) add("FAIL", "pi", `not on PATH (${piInstall})`);
   else {
     let ver = "";
     try {
       ver = /\d+\.\d+\.\d+/.exec(execFileSync(pi, ["--version"], { encoding: "utf8", env }))?.[0] ?? "";
     } catch {}
-    if (ver.startsWith("0.87.")) add("OK", "pi", `${ver} on PATH (${pi})`);
+    if (ver.startsWith(PI_TESTED_MINOR)) add("OK", "pi", `${ver} on PATH (${pi})`);
     else if (!ver) add("WARN", "pi", `found at ${pi} but its version is unreadable`);
-    else add("WARN", "pi", `${ver} differs from the tested 0.87.x; run npm test in the package after upgrading pi`);
+    else if (compareVersions(ver, PI_MIN_VERSION) < 0) add("FAIL", "pi", `${ver} is older than ${PI_MIN_VERSION}; its built-in MCP Client lacks the exposure, timeout and oauth.clientName support the Template relies on (${piInstall})`);
+    else add("WARN", "pi", `${ver} differs from the tested ${PI_TESTED_MINOR}x; run npm test in the package after upgrading pi`);
   }
   return out;
 }

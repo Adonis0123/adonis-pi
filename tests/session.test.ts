@@ -30,6 +30,9 @@ test("decideNotification: question and permission need kinds.confirm; activity i
   assert.deepEqual(q.payload, { hook_event_name: "PreToolUse", session_id: "s1", cwd: "/p", tool_name: "AskUserQuestion", tool_input: { questions: [{ question: "A?", header: "H" }] } });
   const p = decideNotification({ kind: "permission", toolName: "write", input: { path: "~/.ssh/x", content: "secret" } }, notify(), ref)!;
   assert.deepEqual(p.payload.tool_input, { path: "~/.ssh/x" }, "only the path travels, never the content");
+  const m = decideNotification({ kind: "permission", toolName: "mcp__kimi_cu__click", input: { tool: "x", app: "com.apple.finder" } }, notify(), ref)!;
+  assert.equal(m.payload.tool_name, "mcp__kimi_cu__click");
+  assert.deepEqual(m.payload.tool_input, {}, "an MCP call travels by name only; its arguments stay in the TUI");
 });
 
 test("decideNotification: settled follows decideSettled (fail / stop / nothing)", () => {

@@ -1,5 +1,7 @@
 # adonis-pi 第二阶段：MCP 接入
 
+> 状态：MCP 接入方式已被 [ADR 0004](../adr/0004-mcp-builtin-client.md) 取代（改用 pi 内置 MCP Client，不再安装 pi-mcp-adapter）。本文保留为第二阶段的历史设计。
+
 日期：2026-09-22 · 状态：已实施并真机验证（记录见 `../verification/2026-09-phase2-mcp.md`） · 决策见 ADR 0003 · 术语见 `../../CONTEXT.md`「MCP（第二阶段）」
 
 ## 1. 目标

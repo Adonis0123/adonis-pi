@@ -26,18 +26,18 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 - **Template**：Repo Layer 里对某个 Account Layer 文件的模板。`pin setup` 在文件不存在时复制它；已存在时永不覆盖。
 - **Drift（漂移）**：某个 Account Layer 文件与它的 Template 在结构上不一致。`pin doctor` 报告 Drift，由人决定是否对齐。
 - **Config（扩展配置）**：Account Layer 里的 `adonis-pi.json`，是所有 Extension 唯一的配置入口。值可以用 `$VAR` 引用环境变量，和 pi 自身 `models.json` 的写法一致。
-- **Env Ref（变量引用）**：Account Layer 文件里对某个环境变量的一次引用，记为「哪个文件、哪个变量」。两种写法：pi 写法（`models.json` 与 Config 里整串的 `$VAR` / `${VAR}`）和 MCP Bridge 写法（MCP Config 里嵌在字串中的 `${VAR}` / `$env:VAR` / `{env:VAR}`）。一个账号引用了什么只算一次，`pin doctor`、启动检查和 `pin --dry-run` 各自对照自己的真相来源。
+- **Env Ref（变量引用）**：Account Layer 文件里对某个环境变量的一次引用，记为「哪个文件、哪个变量」。两种写法：pi 写法（`models.json` 与 Config 里整串的 `$VAR` / `${VAR}`）和 MCP Client 写法（MCP Config 里 `env`、`headers`、`oauth.clientSecret` 值中任意位置的 `${VAR}` / `$VAR`）。一个账号引用了什么只算一次，`pin doctor`、启动检查和 `pin --dry-run` 各自对照自己的真相来源。
 
 ## 入口
 
 - **Launcher（入口）**：`pin` 命令。`pin <n>` 启动第 n 号 Account 的 pi；`pin setup <n>` 把 Template 物化到该 Account；`pin doctor <n>` 体检。
-- **Finding（体检结论）**：`pin doctor` 的一条结论：级别（OK / WARN / FAIL）、对象（某个 Account Layer 文件，或 pi、MCP Bridge 本身）、可选的细项（某个 MCP Server、某个变量、某个包）和说明。doctor 先得出全部 Finding，再逐条打印；任何 FAIL 让 doctor 以 1 退出。
+- **Finding（体检结论）**：`pin doctor` 的一条结论：级别（OK / WARN / FAIL）、对象（某个 Account Layer 文件，或 pi 本身）、可选的细项（某个 MCP Server、某个变量、某个包）和说明。doctor 先得出全部 Finding，再逐条打印；任何 FAIL 让 doctor 以 1 退出。
 - **acc**：机器上已有的跨家族账号维护命令。pi 家族接入 acc 时，acc 委托 `pin`，不重复实现。
 
 ## 能力（第一阶段）
 
 - **Permission Gate（权限门）**：拦截危险工具调用的 Extension。命中 Deny 规则时，交互模式下询问，非交互模式下直接阻止。
-- **Deny 规则**：Permission Gate 的一条匹配规则，作用于命令文本、文件路径，或 MCP 工具名（`<server>_<tool>`，直接工具按名字，`mcp` 元工具按其 `tool` 参数）。
+- **Deny 规则**：Permission Gate 的一条匹配规则，作用于命令文本、文件路径，或 MCP 工具名（`mcp__<server>__<tool>`，`[A-Za-z0-9_]` 以外的字符写成 `_`；Claude Code 保留连字符，所以 `kimi-cu` 的工具在两边拼法不同）。
 - **Attention Notify（注意力提醒）**：在 agent 等待输入、出错、空闲时通知用户的 Extension。它只负责判定事件并调用一个外部 Notifier，不负责发送。
 - **Notifier**：Attention Notify 调用的外部命令，由 Config 指定。发送渠道（飞书或其他）由 Notifier 决定。
 - **Ask Tool**：名为 `AskUserQuestion` 的工具，参数与 Claude Code 同名工具兼容，让写给 Claude Code 的 skill 无需改字就能在 pi 里向用户提问。
@@ -47,9 +47,9 @@ adonis-pi 的术语表。只定义词，不写实现。实现决策见 `docs/adr
 
 ## MCP（第二阶段）
 
-- **MCP Server（MCP 服务器）**：通过 MCP 协议向宿主提供工具的外部进程或 HTTP 服务。第二阶段启用三个：kimi-cu（macOS 桌面操作）、deepwiki、figma-rest（经 Figma REST API 只读设计文件）；figma（Figma 官方远程服务器）只保留禁用占位，不接。
-- **MCP Bridge（MCP 桥）**：让 pi 具备 MCP 客户端能力的 Pi Package。本仓不实现 MCP 协议，只依赖并配置一个现成的 Bridge（ADR 0003 选 `pi-mcp-adapter`，版本锁在 Template 里）。
-- **MCP Config**：Account Layer 里的 `mcp.json`，MCP Bridge 的唯一配置入口，列出该账号启用的 MCP Server。有 Template，受 Drift 检查。
+- **MCP Server（MCP 服务器）**：通过 MCP 协议向宿主提供工具的外部进程或 HTTP 服务。启用三个：kimi-cu（macOS 桌面操作）、deepwiki、figma-rest（经 Figma REST API 只读设计文件，读 Figma 的兜底，也是目前 pi 上唯一可用的 Figma 路径）。figma（Figma 官方远程服务器）是首选，但 pi 不在其客户端名单内，保留禁用占位，不接。
+- **MCP Client（MCP 客户端）**：pi 自带的 MCP 支持（内置 extension `builtin:mcp`）。本仓不实现 MCP 协议，也不再依赖第三方桥接包，只配置它。一个账号里只能有它一个 MCP Client。
+- **MCP Config**：Account Layer 里的 `mcp.json`，MCP Client 的唯一配置入口，列出该账号启用的 MCP Server。有 Template，受 Drift 检查。
 - **Server Status（服务器状态）**：对一个 MCP Server「此账号启动的 pi 能否用到它」的唯一裁决：可用，或不可用及原因（已禁用、占位符未解析、无 command 也无 url、命令不可执行、所需变量为空或无法判断）。`pin doctor` 与启动检查只呈现这个裁决，不各自判断。
 - **CLI Facade（命令行门面）**：把一个 MCP Server 包成命令行程序、由 Skill 调用的方式。机器上 chrome-devtools 走这条路，pi 沿用；本仓不为其他 MCP Server 新建 Facade。
 

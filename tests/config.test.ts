@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import { ConfigError, envRefs, loadConfig, loadTemplate, resolveEnvRef } from "../lib/config.ts";
+import { readFileSync } from "node:fs";
+import { ConfigError, DENY_TOOL_RULE, envRefs, loadConfig, loadTemplate, resolveEnvRef, suggestDenyToolRule } from "../lib/config.ts";
 
 test("resolveEnvRef resolves $VAR and ${VAR}, leaves plain strings", () => {
   const env = { FOO: "bar" };
@@ -102,4 +103,34 @@ test("loadConfig enforces the schema's idleDelaySeconds constraint: integer >= 0
   }
   writeFileSync(file, JSON.stringify({ notify: { idleDelaySeconds: 0 } }));
   assert.equal(loadConfig({ path: file }).notify.idleDelaySeconds, 0);
+});
+
+test("loadConfig rejects a pi-mcp-adapter-era denyTools rule and names the MCP Client rewrite", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-cfg-"));
+  const file = join(dir, "adonis-pi.json");
+  for (const [bad, fix] of [
+    ["figma_use_figma", "mcp__figma__use_figma"],
+    ["kimi-cu_click", "mcp__kimi_cu__click"],
+    ["figma-rest_get_*", "mcp__figma_rest__get_*"],
+    ["mcp__kimi-cu__click", "mcp__kimi_cu__click"],
+    ["*", "mcp__*"],
+    ["mcp__", "mcp__*"],
+    ["mcp__figma_use_figma", "mcp__figma__use_figma"],
+  ]) {
+    writeFileSync(file, JSON.stringify({ permissionGate: { denyTools: [bad] } }));
+    assert.throws(
+      () => loadConfig({ path: file, env: {} }),
+      (e: unknown) => e instanceof ConfigError && e.message.includes(`denyTools rule "${bad}"`) && e.message.includes(`rewrite it as "${fix}"`),
+      bad,
+    );
+    assert.ok(DENY_TOOL_RULE.test(suggestDenyToolRule(bad)), `suggestion for ${bad} must itself be valid`);
+  }
+  writeFileSync(file, JSON.stringify({ permissionGate: { denyTools: ["mcp__kimi_cu__click", "mcp__*"] } }));
+  assert.ok(loadConfig({ path: file, env: {} }).permissionGate.denyTools.includes("mcp__kimi_cu__click"));
+});
+
+test("template denyTools all use the MCP Client form, and the schema pattern matches the validator", () => {
+  for (const rule of loadTemplate().permissionGate.denyTools) assert.match(rule, DENY_TOOL_RULE);
+  const schema = JSON.parse(readFileSync(join(import.meta.dirname, "..", "config.schema.json"), "utf8"));
+  assert.equal(schema.properties.permissionGate.properties.denyTools.items.pattern, DENY_TOOL_RULE.source);
 });

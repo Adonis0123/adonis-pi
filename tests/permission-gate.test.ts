@@ -161,45 +161,48 @@ test("asking sends a PermissionRequest notification in the TUI, none in rpc, and
   assert.equal(notifier.sent.length, 1, "a block without a prompt notifies nobody");
 });
 
-test("denyTools: direct MCP tools by name, proxy calls by the mcp tool argument; native tools and read-only proxy ops pass", () => {
-  const cfg = { ...gate(), denyTools: ["figma_use_figma", "figma_generate_*", "kimi-cu_click"] };
-  // direct tool (adapter directTools: true registers `<server>_<tool>`)
-  let hit = matchToolCall({ toolName: "figma_use_figma", input: { code: "x" } }, cfg, "/p");
+test("denyTools: MCP Client tools (mcp__<server>__<tool>) by name and glob; native and non-mcp__ extension tools pass", () => {
+  const cfg = { ...gate(), denyTools: ["mcp__figma__use_figma", "mcp__figma*__create_*", "mcp__kimi_cu__click"] };
+  let hit = matchToolCall({ toolName: "mcp__figma__use_figma", input: { code: "x" } }, cfg, "/p");
   assert.ok(hit);
-  assert.match(hit!.reason, /denyTools figma_use_figma/);
-  assert.ok(matchToolCall({ toolName: "figma_generate_figma_design", input: {} }, cfg, "/p"));
-  assert.ok(matchToolCall({ toolName: "kimi-cu_click", input: { app: "com.apple.finder", index: 3 } }, cfg, "/p"));
-  assert.equal(matchToolCall({ toolName: "kimi-cu_get_app_state", input: { app: "x" } }, cfg, "/p"), undefined);
-  // proxy meta-tool: the real target sits in input.tool
-  hit = matchToolCall({ toolName: "mcp", input: { tool: "figma_use_figma", args: { code: "x" } } }, cfg, "/p");
-  assert.ok(hit);
-  assert.match(hit!.detail, /^figma_use_figma \{"code":"x"\}/);
-  assert.equal(matchToolCall({ toolName: "mcp", input: { tool: "deepwiki_ask_question", args: {} } }, cfg, "/p"), undefined);
-  assert.equal(matchToolCall({ toolName: "mcp", input: { search: "figma" } }, cfg, "/p"), undefined, "search/describe/connect carry no target and the defaults never name the meta-tool");
-  assert.ok(matchToolCall({ toolName: "mcp", input: { connect: "kimi-cu" } }, { ...cfg, denyTools: ["mcp"] }, "/p"), "a rule literally named mcp gates every Bridge operation, connect included");
-  // pi's own tools never go through denyTools even when a glob would match their name
-  assert.equal(matchToolCall({ toolName: "bash", input: { command: "echo figma_use_figma" } }, { ...cfg, denyTools: ["*"] }, "/p"), undefined);
-  assert.equal(matchToolCall({ toolName: "AskUserQuestion", input: { questions: [] } }, { ...cfg, denyTools: ["*"] }, "/p"), undefined);
-  // the shipped template gates Figma canvas writes and nothing of kimi-cu / deepwiki
-  assert.ok(matchToolCall({ toolName: "figma_create_new_file", input: {} }, gate(), "/p"));
-  assert.equal(matchToolCall({ toolName: "kimi-cu_type_text", input: { text: "x" } }, gate(), "/p"), undefined);
-  assert.equal(matchToolCall({ toolName: "mcp", input: { tool: "deepwiki_ask_question" } }, gate(), "/p"), undefined);
+  assert.match(hit!.reason, /denyTools mcp__figma__use_figma/);
+  assert.match(hit!.detail, /^mcp__figma__use_figma \{"code":"x"\}$/);
+  hit = matchToolCall({ toolName: "mcp__figma__create_design_system_rules", input: {} }, cfg, "/p");
+  assert.match(hit!.reason, /denyTools mcp__figma\*__create_\*/);
+  assert.ok(matchToolCall({ toolName: "mcp__kimi_cu__click", input: { app: "com.apple.finder", index: 3 } }, cfg, "/p"));
+  assert.equal(matchToolCall({ toolName: "mcp__kimi_cu__get_app_state", input: { app: "x" } }, cfg, "/p"), undefined);
+  assert.equal(matchToolCall({ toolName: "mcp__deepwiki__ask_question", input: {} }, cfg, "/p"), undefined);
+  // the detail is capped: <name> <args json sliced to 200>
+  hit = matchToolCall({ toolName: "mcp__figma__use_figma", input: { code: "y".repeat(500) } }, cfg, "/p");
+  assert.equal(hit!.detail.length, "mcp__figma__use_figma ".length + 200);
+  // only mcp__ names go through denyTools: pi's tools and other Extension tools pass even under mcp__*
+  const all = { ...cfg, denyTools: ["mcp__*"] };
+  assert.ok(matchToolCall({ toolName: "mcp__deepwiki__ask_question", input: {} }, all, "/p"));
+  for (const toolName of ["AskUserQuestion", "codemode", "tool_search", "list_mcp_resources", "read", "grep"]) {
+    assert.equal(matchToolCall({ toolName, input: {} }, all, "/p"), undefined, `unexpected hit for ${toolName}`);
+  }
+  assert.equal(matchToolCall({ toolName: "bash", input: { command: "echo mcp__figma__use_figma" } }, all, "/p"), undefined);
+  // the shipped template gates Figma canvas writes on every Figma server and nothing of kimi-cu / deepwiki / figma-rest reads
+  assert.ok(matchToolCall({ toolName: "mcp__figma__create_new_file", input: {} }, gate(), "/p"));
+  assert.ok(matchToolCall({ toolName: "mcp__figma__generate_diagram", input: {} }, gate(), "/p"));
+  assert.ok(matchToolCall({ toolName: "mcp__figma__upload_assets", input: {} }, gate(), "/p"));
+  assert.equal(matchToolCall({ toolName: "mcp__figma__get_screenshot", input: {} }, gate(), "/p"), undefined);
+  assert.equal(matchToolCall({ toolName: "mcp__figma_rest__get_figma_data", input: {} }, gate(), "/p"), undefined);
+  assert.equal(matchToolCall({ toolName: "mcp__kimi_cu__type_text", input: { text: "x" } }, gate(), "/p"), undefined);
 });
 
-test("ask mode confirms an MCP hit in both shapes and notifies with the target tool name", async () => {
-  const n = fakeNotifier({}, { permissionGate: { ...gate(), denyTools: ["kimi-cu_click"] } });
+test("ask mode confirms an MCP hit and notifies with the MCP tool name", async () => {
+  const n = fakeNotifier({}, { permissionGate: { ...gate(), denyTools: ["mcp__kimi_cu__click"] } });
   const { pi, emit } = createFakePi();
   permissionGate(pi, n.deps);
   const asked: string[] = [];
   const ctx = fakeCtx({ ui: { ...fakeCtx().ui, confirm: async (_t: string, m: string) => { asked.push(m); return false; } } });
-  let r = (await emit("tool_call", { toolName: "kimi-cu_click", input: { app: "a", index: 1 } }, ctx)) as { block: boolean };
+  const r = (await emit("tool_call", { toolName: "mcp__kimi_cu__click", input: { app: "a", index: 1 } }, ctx)) as { block: boolean };
   assert.equal(r.block, true);
-  r = (await emit("tool_call", { toolName: "mcp", input: { tool: "kimi-cu_click", args: { app: "a", index: 1 } } }, ctx)) as { block: boolean };
-  assert.equal(r.block, true);
-  assert.equal(asked.length, 2);
-  assert.match(asked[1], /kimi-cu_click \{"app":"a","index":1\}/);
-  assert.equal(n.sent.length, 2);
-  assert.deepEqual((n.sent[1].payload as any).tool_input, { tool: "kimi-cu_click" });
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /mcp__kimi_cu__click \{"app":"a","index":1\}/);
+  assert.equal(n.sent.length, 1);
+  assert.equal((n.sent[0].payload as any).tool_name, "mcp__kimi_cu__click");
 });
 
 test("a broken adonis-pi.json turns ask into block for every hit, including MCP tools", async () => {
@@ -211,11 +214,29 @@ test("a broken adonis-pi.json turns ask into block for every hit, including MCP 
     permissionGate(pi);
     let asked = 0;
     const ctx = fakeCtx({ ui: { ...fakeCtx().ui, confirm: async () => { asked++; return true; } } });
-    const r = (await emit("tool_call", { toolName: "figma_use_figma", input: {} }, ctx)) as { block: boolean; reason: string };
+    const r = (await emit("tool_call", { toolName: "mcp__figma__use_figma", input: {} }, ctx)) as { block: boolean; reason: string };
     assert.equal(r.block, true);
     assert.match(r.reason, /permission gate/);
     assert.equal(asked, 0, "no confirm: the account's rules are unreadable, so hits are blocked outright");
-    assert.equal(await emit("tool_call", { toolName: "kimi-cu_get_app_state", input: {} }, ctx), undefined, "non-hits still pass");
+    assert.equal(await emit("tool_call", { toolName: "mcp__kimi_cu__get_app_state", input: {} }, ctx), undefined, "non-hits still pass");
+  } finally {
+    delete process.env.PI_CODING_AGENT_DIR;
+  }
+});
+
+test("an old <server>_<tool> denyTools rule is a broken config: warn with the rewrite, block hits on template defaults", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "adonis-pi-gate-"));
+  writeFileSync(join(dir, "adonis-pi.json"), JSON.stringify({ permissionGate: { denyTools: ["kimi-cu_click"] } }));
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    const { pi, emit } = createFakePi();
+    permissionGate(pi);
+    const warnings: string[] = [];
+    const ctx = fakeCtx({ ui: { ...fakeCtx().ui, notify: (m: string) => warnings.push(m), confirm: async () => true } });
+    const r = (await emit("tool_call", { toolName: "mcp__figma__use_figma", input: {} }, ctx)) as { block: boolean };
+    assert.equal(r.block, true);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /rewrite it as "mcp__kimi_cu__click"/);
   } finally {
     delete process.env.PI_CODING_AGENT_DIR;
   }

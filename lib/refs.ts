@@ -15,8 +15,9 @@ export interface AccountRef {
 /**
  * Every `$VAR` an account's files reference, grouped by file in a fixed order, names sorted and unique per file.
  * models.json and the effective Config (account merged over the Template) use pi's whole-string `$VAR`/`${VAR}`;
- * mcp.json uses the Bridge's `${VAR}`/`$env:VAR`/`{env:VAR}` anywhere in a string. An unreadable mcp.json contributes
- * nothing: reporting the broken file is `pin doctor`'s job, not a missing variable.
+ * mcp.json uses pi's config-value grammar (`${VAR}` and `$VAR` anywhere in `env`, `headers`, `oauth.clientSecret`; a
+ * `!command` value references nothing; `url`, `cwd`, `args` are literal), as lib/mcp.ts reads it. An unreadable mcp.json
+ * contributes nothing: reporting the broken file is `pin doctor`'s job, not a missing variable.
  */
 export function accountRefs(dir: string): AccountRef[] {
   const out: AccountRef[] = [];

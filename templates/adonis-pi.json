@@ -15,11 +15,11 @@
       "~/.aws/**"
     ],
     "denyTools": [
-      "figma_use_figma",
-      "figma_create_*",
-      "figma_generate_*",
-      "figma_upload_*",
-      "figma_add_*"
+      "mcp__figma*__use_figma",
+      "mcp__figma*__create_*",
+      "mcp__figma*__generate_*",
+      "mcp__figma*__upload_*",
+      "mcp__figma*__add_*"
     ]
   },
   "notify": {

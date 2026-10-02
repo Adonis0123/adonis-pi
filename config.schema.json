@@ -38,9 +38,10 @@
         "denyTools": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^mcp__(?=[A-Za-z0-9_*]*(\\*|[A-Za-z0-9]__))[A-Za-z0-9_*]+$"
           },
-          "description": "Globs on MCP tool names (<server>_<tool>) that the gate intercepts: direct tools by name, proxy calls by the `tool` argument of the `mcp` meta-tool."
+          "description": "Globs on MCP tool names as pi's built-in MCP Client registers them: mcp__<server>__<tool>, every character outside A-Za-z0-9_ written as _ (kimi-cu -> mcp__kimi_cu__click). * matches any run of characters. Old <server>_<tool> rules are rejected."
         }
       }
     },
