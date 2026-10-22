@@ -422,3 +422,15 @@ test("launch clears inherited provider env unless proxy.env sets it", () => {
   assert.match(r.out, /^FIGMA_OAUTH_TOKEN=<unset>$/m, "Framelink prefers an OAuth token over the API key when both are set");
   assert.doesNotMatch(r.out, /leak/);
 });
+
+
+test("launch ignores stdout from an unsupported stat format", () => {
+  const home = mkdtempSync(join(tmpdir(), "pin-home-"));
+  pin(home, ["setup", "1"]);
+  const stat = join(home, "fakebin", "stat");
+  writeFileSync(stat, '#!/bin/sh\nif [ "$1" = "-f" ]; then echo "filesystem information"; exit 1; fi\necho 600\n');
+  chmodSync(stat, 0o755);
+  const r = pin(home, [], { PIN_DRY_RUN: "1" });
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /filesystem information/);
+});

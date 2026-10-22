@@ -22,7 +22,14 @@ need_node() {
 }
 account() { node --disable-warning=ExperimentalWarning "$ACCOUNT" "$@"; }
 
-mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+mode_of() {
+  # GNU stat may print filesystem information before rejecting BSD flags.
+  if mode=$(stat -f '%Lp' "$1" 2>/dev/null); then
+    printf '%s\n' "$mode"
+  else
+    stat -c '%a' "$1"
+  fi
+}
 
 do_launch() {
   n=$1; shift
